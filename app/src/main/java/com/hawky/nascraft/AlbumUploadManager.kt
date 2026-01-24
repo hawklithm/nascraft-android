@@ -57,7 +57,7 @@ sealed class UploadStatus {
 /**
  * 上传进度回调
  */
-typealias UploadProgressCallback = (photoInfo: PhotoInfo, progress: Float, status: UploadStatus) -> Unit
+typealias UploadProgressCallback = (photoInfo: PhotoInfo, progress: Float, status: UploadStatus, totalFiles: Int?, currentFileIndex: Int?) -> Unit
 
 /**
  * Android 相册上传管理器
@@ -443,18 +443,20 @@ class AlbumUploadManager(private val context: Context) {
     private suspend fun uploadSingleFile(
         baseUrl: String,
         photoInfo: PhotoInfo,
-        progressCallback: UploadProgressCallback? = null
+        progressCallback: UploadProgressCallback? = null,
+        totalFiles: Int? = null,
+        currentFileIndex: Int? = null
     ): Boolean = withContext(Dispatchers.IO) {
         Log.i(TAG, "开始上传文件: baseUrl=$baseUrl, filename=${photoInfo.name}")
 
-        progressCallback?.invoke(photoInfo, 0f, UploadStatus.Uploading)
+        progressCallback?.invoke(photoInfo, 0f, UploadStatus.Uploading, totalFiles, currentFileIndex)
 
         try {
             // 1. 读取照片数据
             val fileData = readPhotoData(photoInfo)
             if (fileData == null || fileData.isEmpty()) {
                 Log.e(TAG, "文件数据为空: ${photoInfo.name}")
-                progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("文件数据为空"))
+                progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("文件数据为空"), totalFiles, currentFileIndex)
                 return@withContext false
             }
 
@@ -466,7 +468,7 @@ class AlbumUploadManager(private val context: Context) {
             val metadata = submitMetadata(baseUrl, photoInfo.name, fileData.size.toLong(), md5Hash)
             if (metadata == null) {
                 Log.e(TAG, "提交元数据失败: ${photoInfo.name}")
-                progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("提交元数据失败"))
+                progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("提交元数据失败"), totalFiles, currentFileIndex)
                 return@withContext false
             }
 
@@ -477,7 +479,7 @@ class AlbumUploadManager(private val context: Context) {
             for (chunkIndex in 0 until totalChunks) {
                 if (shouldStop) {
                     Log.i(TAG, "上传被用户停止: ${photoInfo.name}")
-                    progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("上传被停止"))
+                    progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("上传被停止"), totalFiles, currentFileIndex)
                     return@withContext false
                 }
 
@@ -497,22 +499,22 @@ class AlbumUploadManager(private val context: Context) {
 
                 if (!uploadSuccess) {
                     Log.e(TAG, "分片 $chunkIndex 上传失败，达到最大重试次数")
-                    progressCallback?.invoke(photoInfo, chunkIndex.toFloat() / totalChunks, UploadStatus.Failed("分片上传失败"))
+                    progressCallback?.invoke(photoInfo, chunkIndex.toFloat() / totalChunks, UploadStatus.Failed("分片上传失败"), totalFiles, currentFileIndex)
                     return@withContext false
                 }
 
                 // 更新进度
                 val progress = (chunkIndex + 1).toFloat() / totalChunks
-                progressCallback?.invoke(photoInfo, progress, UploadStatus.Uploading)
+                progressCallback?.invoke(photoInfo, progress, UploadStatus.Uploading, totalFiles, currentFileIndex)
             }
 
             Log.i(TAG, "文件上传完成: ${photoInfo.name}")
-            progressCallback?.invoke(photoInfo, 1f, UploadStatus.Completed)
+            progressCallback?.invoke(photoInfo, 1f, UploadStatus.Completed, totalFiles, currentFileIndex)
             return@withContext true
 
         } catch (e: Exception) {
             Log.e(TAG, "上传文件失败: baseUrl=$baseUrl, filename=${photoInfo.name}", e)
-            progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed(e.message ?: "未知错误"))
+            progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed(e.message ?: "未知错误"), totalFiles, currentFileIndex)
             return@withContext false
         }
     }
@@ -535,7 +537,9 @@ class AlbumUploadManager(private val context: Context) {
             progressCallback?.invoke(
                 PhotoInfo(0, "", "", "", 0, 0, 0, 0, 0, 0),
                 0f,
-                UploadStatus.Failed("权限不足")
+                UploadStatus.Failed("权限不足"),
+                null,
+                null
             )
             return
         }
@@ -563,7 +567,7 @@ class AlbumUploadManager(private val context: Context) {
                     }
 
                     Log.i(TAG, "上传照片 ${index + 1}/${photos.size}: ${photo.name}")
-                    val success = uploadSingleFile(baseUrl, photo, progressCallback)
+                    val success = uploadSingleFile(baseUrl, photo, progressCallback, photos.size, index)
 
                     if (!success) {
                         Log.e(TAG, "照片上传失败: ${photo.name}")
@@ -580,7 +584,9 @@ class AlbumUploadManager(private val context: Context) {
                 progressCallback?.invoke(
                     PhotoInfo(0, "", "", "", 0, 0, 0, 0, 0, 0),
                     1f,
-                    UploadStatus.Completed
+                    UploadStatus.Completed,
+                    photos.size,
+                    photos.size
                 )
 
             } catch (e: Exception) {
@@ -588,7 +594,9 @@ class AlbumUploadManager(private val context: Context) {
                 progressCallback?.invoke(
                     PhotoInfo(0, "", "", "", 0, 0, 0, 0, 0, 0),
                     0f,
-                    UploadStatus.Failed(e.message ?: "未知错误")
+                    UploadStatus.Failed(e.message ?: "未知错误"),
+                    null,
+                    null
                 )
             } finally {
                 isUploading = false

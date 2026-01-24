@@ -23,13 +23,24 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
 import com.hawky.nascraft.ui.theme.NascraftandroidTheme
+import com.hawky.nascraft.UploadStatus
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
+data class UploadState(
+    val fileName: String,
+    val progress: Float, // 0.0 to 1.0
+    val status: UploadStatus,
+    val totalFiles: Int? = null,
+    val currentFileIndex: Int? = null
+)
+
 class MainActivity : ComponentActivity() {
     private lateinit var discoveryManager: DiscoveryManager
     private lateinit var albumUploadManager: AlbumUploadManager
+    
+    private var uploadState by mutableStateOf<UploadState?>(null)
     
     private var pendingUploadServer: DiscoveredServer? = null
     private val PERMISSION_REQUEST_CODE = 1001
@@ -45,7 +56,8 @@ class MainActivity : ComponentActivity() {
                     discoveryManager = discoveryManager,
                     onConnectClick = { server ->
                         onConnectToServer(server)
-                    }
+                    },
+                    uploadState = uploadState
                 )
             }
         }
@@ -74,11 +86,26 @@ class MainActivity : ComponentActivity() {
         // 停止服务发现，避免与上传操作冲突
         discoveryManager.stopDiscovery()
         
+        // 设置初始上传状态
+        uploadState = UploadState(
+            fileName = "准备上传...",
+            progress = 0f,
+            status = UploadStatus.Uploading
+        )
+        
         // 启动上传
-        albumUploadManager.startAlbumUpload(baseUrl) { photoInfo, progress, status ->
+        albumUploadManager.startAlbumUpload(baseUrl) { photoInfo, progress, status, totalFiles, currentFileIndex ->
             // 更新UI，这里可以显示上传进度
-            Log.d("MainActivity", "上传进度: ${photoInfo.name} - $progress, $status")
-            // TODO: 在UI中显示进度
+            Log.d("MainActivity", "上传进度: ${photoInfo.name} - $progress, $status, totalFiles=$totalFiles, currentFileIndex=$currentFileIndex")
+            runOnUiThread {
+                uploadState = UploadState(
+                    fileName = photoInfo.name,
+                    progress = progress,
+                    status = status,
+                    totalFiles = totalFiles,
+                    currentFileIndex = currentFileIndex
+                )
+            }
         }
     }
 
@@ -135,11 +162,20 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun DiscoveryScreen(
     discoveryManager: DiscoveryManager,
-    onConnectClick: (DiscoveredServer) -> Unit
+    onConnectClick: (DiscoveredServer) -> Unit,
+    uploadState: UploadState? = null
 ) {
     val discoveredServers by discoveryManager.discoveredServers.collectAsState()
     var discoveryInProgress by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
+    var showCompletionDialog by remember { mutableStateOf(false) }
+
+    // 当上传状态变为完成时显示弹窗
+    LaunchedEffect(uploadState?.status) {
+        if (uploadState?.status is UploadStatus.Completed) {
+            showCompletionDialog = true
+        }
+    }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
         Column(
@@ -155,6 +191,64 @@ fun DiscoveryScreen(
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(bottom = 24.dp)
             )
+
+            // 上传进度显示
+            uploadState?.let { state ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Text(
+                            text = "上传进度",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                        if (state.fileName.isNotEmpty()) {
+                            Text(
+                                text = "文件: ${state.fileName}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(bottom = 4.dp)
+                            )
+                        }
+                        // 显示文件计数
+                        if (state.totalFiles != null && state.currentFileIndex != null) {
+                            Text(
+                                text = "文件 ${state.currentFileIndex + 1}/${state.totalFiles}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 4.dp)
+                            )
+                        }
+                        LinearProgressIndicator(
+                            progress = { state.progress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .padding(vertical = 8.dp)
+                        )
+                        Text(
+                            text = when (state.status) {
+                                is UploadStatus.Uploading -> "上传中..."
+                                is UploadStatus.Completed -> "上传完成"
+                                is UploadStatus.Failed -> "上传失败"
+                                else -> "等待中"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = when (state.status) {
+                                is UploadStatus.Completed -> MaterialTheme.colorScheme.primary
+                                is UploadStatus.Failed -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.onSurface
+                            }
+                        )
+                    }
+                }
+            }
 
             Button(
                 onClick = {
@@ -229,6 +323,22 @@ fun DiscoveryScreen(
             }
         }
     }
+
+    // 上传完成弹窗
+    if (showCompletionDialog) {
+        AlertDialog(
+            onDismissRequest = { showCompletionDialog = false },
+            title = { Text("上传完成") },
+            text = { Text("所有照片已成功上传到服务器。") },
+            confirmButton = {
+                Button(
+                    onClick = { showCompletionDialog = false }
+                ) {
+                    Text("确定")
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -279,6 +389,6 @@ fun ServerCard(
 fun DiscoveryScreenPreview() {
     NascraftandroidTheme {
         // 使用一个模拟的 DiscoveryManager 进行预览
-        DiscoveryScreen(DiscoveryManager(), onConnectClick = {})
+        DiscoveryScreen(DiscoveryManager(), onConnectClick = {}, uploadState = null)
     }
 }
