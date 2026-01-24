@@ -153,7 +153,7 @@ class DiscoveryManager {
             DatagramSocket().apply {
                 broadcast = true
                 setReuseAddress(true)
-                soTimeout = (DISCOVERY_TIMEOUT_SECONDS * 1000).toInt()
+                soTimeout = 1000 // 设置1秒的socket超时，以便更频繁地检查取消状态
                 Log.d(TAG, "Socket created: broadcast=$broadcast, reuseAddress=$reuseAddress, timeout=$soTimeout")
             }
         } catch (e: Exception) {
@@ -203,6 +203,14 @@ class DiscoveryManager {
             Log.d(TAG, "Starting to listen for responses for ${DISCOVERY_TIMEOUT_SECONDS} seconds")
             
             while (System.currentTimeMillis() - startTime < DISCOVERY_TIMEOUT_SECONDS * 1000) {
+                // 检查协程是否已取消，如果是则退出
+                try {
+                    kotlin.coroutines.coroutineContext.ensureActive()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    Log.d(TAG, "Discovery cancelled, exiting")
+                    throw e // 重新抛出取消异常
+                }
+                
                 try {
                     socket.receive(receivePacket)
                     responseCount++
@@ -216,9 +224,9 @@ class DiscoveryManager {
                         validateAndAddServer(server, servers)
                     }
                 } catch (e: java.net.SocketTimeoutException) {
-                    // 超时正常退出
-                    Log.d(TAG, "Socket timeout reached, stopping discovery")
-                    break
+                    // socket超时是正常的，继续循环直到总超时时间结束
+                    Log.d(TAG, "Socket receive timeout, continuing...")
+                    // 不跳出循环，继续等待其他响应
                 } catch (e: Exception) {
                     Log.w(TAG, "Error receiving packet", e)
                     // 继续等待其他响应
@@ -226,10 +234,17 @@ class DiscoveryManager {
             }
 
             Log.i(TAG, "Discovery completed, found ${servers.size} servers out of $responseCount total responses")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e // 重新抛出取消异常
         } catch (e: Exception) {
             Log.e(TAG, "Discovery error", e)
         } finally {
-            socket.close()
+            try {
+                socket.close()
+                Log.d(TAG, "Discovery socket closed")
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing socket", e)
+            }
         }
     }
 

@@ -71,6 +71,9 @@ class MainActivity : ComponentActivity() {
         val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
         Log.i("MainActivity", "开始相册上传到: $baseUrl")
         
+        // 停止服务发现，避免与上传操作冲突
+        discoveryManager.stopDiscovery()
+        
         // 启动上传
         albumUploadManager.startAlbumUpload(baseUrl) { photoInfo, progress, status ->
             // 更新UI，这里可以显示上传进度
