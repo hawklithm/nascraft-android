@@ -586,7 +586,7 @@ class AlbumUploadManager(private val context: Context) {
                     1f,
                     UploadStatus.Completed,
                     photos.size,
-                    photos.size
+                    photos.size - 1
                 )
 
             } catch (e: Exception) {
