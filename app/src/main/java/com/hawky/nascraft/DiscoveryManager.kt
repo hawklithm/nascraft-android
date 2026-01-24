@@ -5,12 +5,17 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.InterfaceAddress
+import java.util.concurrent.TimeUnit
 
 /**
  * 表示一个被发现的服务端实例
@@ -41,6 +46,9 @@ class DiscoveryManager {
         private val BROADCAST_ADDRESS = InetAddress.getByName("255.255.255.255")
         // 超时时间（秒）
         const val DISCOVERY_TIMEOUT_SECONDS = 5L
+
+        private const val HELLO_PATH = "/api/hello"
+        private const val HELLO_TIMEOUT_MS = 1500L
     }
 
     private val _discoveredServers = MutableStateFlow<List<DiscoveredServer>>(emptyList())
@@ -48,6 +56,15 @@ class DiscoveryManager {
 
     private var discoveryJob: Job? = null
     private val discoveryScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    private val helloHttpClient = OkHttpClient.Builder()
+        .connectTimeout(HELLO_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        .readTimeout(HELLO_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        .writeTimeout(HELLO_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        .build()
+
+    private val validationMutex = Mutex()
+    private val validatingServerKeys = HashSet<String>()
 
     /**
      * 开始服务发现过程
@@ -111,8 +128,13 @@ class DiscoveryManager {
                 val responseData = receivePacket.data.copyOf(receivePacket.length)
                 val responseJson = String(responseData, Charsets.UTF_8)
                 Log.d(TAG, "Received direct response: ${responseJson.take(200)}")
-                
-                parseResponse(responseJson, receivePacket.address)
+
+                val server = parseResponse(responseJson, receivePacket.address)
+                if (server == null) {
+                    null
+                } else {
+                    if (validateServerHello(server)) server else null
+                }
             } finally {
                 socket.close()
             }
@@ -191,11 +213,7 @@ class DiscoveryManager {
                     // 解析响应
                     val server = parseResponse(responseJson, receivePacket.address)
                     server?.let {
-                        if (servers.none { s -> s.ip == server.ip && s.port == server.port }) {
-                            servers.add(server)
-                            _discoveredServers.value = servers.toList()
-                            Log.i(TAG, "Discovered server: ${server.name} at ${server.ip}:${server.port}")
-                        }
+                        validateAndAddServer(server, servers)
                     }
                 } catch (e: java.net.SocketTimeoutException) {
                     // 超时正常退出
@@ -212,6 +230,82 @@ class DiscoveryManager {
             Log.e(TAG, "Discovery error", e)
         } finally {
             socket.close()
+        }
+    }
+
+    private fun serverKey(server: DiscoveredServer): String {
+        return "${server.proto}://${server.ip.hostAddress}:${server.port}"
+    }
+
+    private fun validateAndAddServer(server: DiscoveredServer, servers: MutableList<DiscoveredServer>) {
+        discoveryScope.launch {
+            val key = serverKey(server)
+
+            val shouldValidate = validationMutex.withLock {
+                val alreadyAdded = servers.any { s -> s.ip == server.ip && s.port == server.port && s.proto == server.proto }
+                if (alreadyAdded) {
+                    false
+                } else if (validatingServerKeys.contains(key)) {
+                    false
+                } else {
+                    validatingServerKeys.add(key)
+                    true
+                }
+            }
+
+            if (!shouldValidate) {
+                return@launch
+            }
+
+            try {
+                val ok = validateServerHello(server)
+                if (!ok) {
+                    Log.w(TAG, "Hello check failed, ignoring server: $key")
+                    return@launch
+                }
+
+                validationMutex.withLock {
+                    if (servers.none { s -> s.ip == server.ip && s.port == server.port && s.proto == server.proto }) {
+                        servers.add(server)
+                        _discoveredServers.value = servers.toList()
+                        Log.i(TAG, "Discovered server (hello ok): ${server.name} at $key")
+                    }
+                }
+            } finally {
+                validationMutex.withLock {
+                    validatingServerKeys.remove(key)
+                }
+            }
+        }
+    }
+
+    private suspend fun validateServerHello(server: DiscoveredServer): Boolean {
+        val baseUrl = serverKey(server)
+        val url = "$baseUrl$HELLO_PATH"
+        Log.d(TAG, "Checking server health: $url")
+
+        return try {
+            withTimeout(HELLO_TIMEOUT_MS) {
+                val request = Request.Builder()
+                    .url(url)
+                    .get()
+                    .build()
+
+                helloHttpClient.newCall(request).execute().use { response ->
+                    val ok = response.isSuccessful
+                    if (!ok) {
+                        val body = response.body?.string()
+                        Log.w(TAG, "Hello check HTTP ${response.code} from $url, body=${body?.take(200)}")
+                    }
+                    ok
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.w(TAG, "Hello check timeout: $url")
+            false
+        } catch (e: Exception) {
+            Log.w(TAG, "Hello check error: $url", e)
+            false
         }
     }
 

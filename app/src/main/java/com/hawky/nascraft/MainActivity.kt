@@ -1,6 +1,9 @@
 package com.hawky.nascraft
 
 import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
+import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -15,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
@@ -25,14 +29,24 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private lateinit var discoveryManager: DiscoveryManager
+    private lateinit var albumUploadManager: AlbumUploadManager
+    
+    private var pendingUploadServer: DiscoveredServer? = null
+    private val PERMISSION_REQUEST_CODE = 1001
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         discoveryManager = DiscoveryManager()
+        albumUploadManager = AlbumUploadManager(this)
         setContent {
             NascraftandroidTheme {
-                DiscoveryScreen(discoveryManager)
+                DiscoveryScreen(
+                    discoveryManager = discoveryManager,
+                    onConnectClick = { server ->
+                        onConnectToServer(server)
+                    }
+                )
             }
         }
     }
@@ -41,10 +55,85 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         discoveryManager.stopDiscovery()
     }
+
+    private fun onConnectToServer(server: DiscoveredServer) {
+        Log.d("MainActivity", "连接按钮点击，服务器: ${server.name}")
+        
+        if (albumUploadManager.hasRequiredPermissions()) {
+            startAlbumUpload(server)
+        } else {
+            pendingUploadServer = server
+            requestAlbumPermissions()
+        }
+    }
+
+    private fun startAlbumUpload(server: DiscoveredServer) {
+        val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
+        Log.i("MainActivity", "开始相册上传到: $baseUrl")
+        
+        // 启动上传
+        albumUploadManager.startAlbumUpload(baseUrl) { photoInfo, progress, status ->
+            // 更新UI，这里可以显示上传进度
+            Log.d("MainActivity", "上传进度: ${photoInfo.name} - $progress, $status")
+            // TODO: 在UI中显示进度
+        }
+    }
+
+    private fun requestAlbumPermissions() {
+        val permissions = albumUploadManager.getRequiredPermissions()
+        
+        // 检查哪些权限尚未授予
+        val permissionsToRequest = permissions.filter { permission ->
+            ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED
+        }.toTypedArray()
+
+        if (permissionsToRequest.isNotEmpty()) {
+            Log.i("MainActivity", "请求权限: ${permissionsToRequest.joinToString()}")
+            requestPermissions(permissionsToRequest, PERMISSION_REQUEST_CODE)
+        } else {
+            // 所有权限都已授予
+            pendingUploadServer?.let { server ->
+                startAlbumUpload(server)
+            }
+            pendingUploadServer = null
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            val allGranted = grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+            
+            if (allGranted) {
+                Log.i("MainActivity", "所有权限已授予")
+                pendingUploadServer?.let { server ->
+                    startAlbumUpload(server)
+                }
+            } else {
+                Log.w("MainActivity", "部分权限被拒绝")
+                // 可以显示提示信息
+                Toast.makeText(
+                    this,
+                    "需要相册访问权限才能上传照片",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            
+            pendingUploadServer = null
+        }
+    }
 }
 
 @Composable
-fun DiscoveryScreen(discoveryManager: DiscoveryManager) {
+fun DiscoveryScreen(
+    discoveryManager: DiscoveryManager,
+    onConnectClick: (DiscoveredServer) -> Unit
+) {
     val discoveredServers by discoveryManager.discoveredServers.collectAsState()
     var discoveryInProgress by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
@@ -107,7 +196,7 @@ fun DiscoveryScreen(discoveryManager: DiscoveryManager) {
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(discoveredServers) { server ->
-                        ServerCard(server)
+                        ServerCard(server, onConnectClick)
                     }
                 }
             } else {
@@ -140,7 +229,10 @@ fun DiscoveryScreen(discoveryManager: DiscoveryManager) {
 }
 
 @Composable
-fun ServerCard(server: DiscoveredServer) {
+fun ServerCard(
+    server: DiscoveredServer,
+    onConnectClick: (DiscoveredServer) -> Unit
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
@@ -169,7 +261,7 @@ fun ServerCard(server: DiscoveredServer) {
             Spacer(modifier = Modifier.height(12.dp))
             Button(
                 onClick = {
-                    // TODO: 连接到选中的服务器
+                    onConnectClick(server)
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -184,6 +276,6 @@ fun ServerCard(server: DiscoveredServer) {
 fun DiscoveryScreenPreview() {
     NascraftandroidTheme {
         // 使用一个模拟的 DiscoveryManager 进行预览
-        DiscoveryScreen(DiscoveryManager())
+        DiscoveryScreen(DiscoveryManager(), onConnectClick = {})
     }
 }
