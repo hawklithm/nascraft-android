@@ -54,6 +54,11 @@ sealed class UploadStatus {
     data class Failed(val error: String) : UploadStatus()
 }
 
+private data class ChunkRange(
+    val startOffset: Long,
+    val endOffset: Long,
+)
+
 /**
  * 上传进度回调
  */
@@ -66,8 +71,7 @@ typealias UploadProgressCallback = (photoInfo: PhotoInfo, progress: Float, statu
 class AlbumUploadManager(private val context: Context) {
     companion object {
         private const val TAG = "AlbumUploadManager"
-        private const val UPLOAD_DELAY_MS = 10000L // 每个文件上传后等待10秒
-        private const val MAX_RETRY_COUNT = 3 // 最大重试次数
+        private const val UPLOAD_RETRY_DELAY_MS = 2000L
         private const val CHUNK_SIZE = 2 * 1024 * 1024 // 2MB分片
     }
 
@@ -120,7 +124,7 @@ class AlbumUploadManager(private val context: Context) {
         val photos = mutableListOf<PhotoInfo>()
         
         if (!hasRequiredPermissions()) {
-            Log.e(TAG, "权限不足，无法访问相册")
+            Log.e(TAG, "Missing required permissions. Cannot access album photos.")
             return@withContext photos
         }
 
@@ -147,7 +151,7 @@ class AlbumUploadManager(private val context: Context) {
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI
             }
 
-            Log.d(TAG, "查询 MediaStore 中的图片... URI: $collection")
+            Log.d(TAG, "Querying images from MediaStore. URI: $collection")
 
             // 查询MediaStore获取所有图片
             val cursor = context.contentResolver.query(
@@ -159,13 +163,13 @@ class AlbumUploadManager(private val context: Context) {
             )
 
             if (cursor == null) {
-                Log.e(TAG, "查询 MediaStore 失败 - cursor 为 null")
+                Log.e(TAG, "MediaStore query failed: cursor is null")
                 return@withContext photos
             }
 
             cursor.use { cursor ->
-                Log.d(TAG, "Cursor 列数: ${cursor.columnCount}")
-                Log.d(TAG, "在 MediaStore 中找到 ${cursor.count} 张照片")
+                Log.d(TAG, "Cursor columns: ${cursor.columnCount}")
+                Log.d(TAG, "Found ${cursor.count} photos in MediaStore")
 
                 val idIndex = cursor.getColumnIndex(MediaStore.Images.Media._ID)
                 val nameIndex = cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
@@ -205,17 +209,17 @@ class AlbumUploadManager(private val context: Context) {
 
                     // 调试：记录前几张照片
                     if (photoCount <= 3) {
-                        Log.d(TAG, "照片 $photoCount - 名称: ${photoInfo.name}, 大小: ${photoInfo.size}")
+                        Log.d(TAG, "Photo $photoCount - name=${photoInfo.name}, size=${photoInfo.size}")
                     }
                 }
 
-                Log.i(TAG, "成功处理 $photoCount 张照片")
+                Log.i(TAG, "Successfully loaded $photoCount photos")
             }
 
         } catch (e: SecurityException) {
-            Log.e(TAG, "访问照片时权限被拒绝", e)
+            Log.e(TAG, "Permission denied while accessing photos", e)
         } catch (e: Exception) {
-            Log.e(TAG, "访问相册时出错", e)
+            Log.e(TAG, "Error while reading album photos", e)
         }
 
         return@withContext photos
@@ -229,7 +233,7 @@ class AlbumUploadManager(private val context: Context) {
             val contentUri = Uri.parse(photoInfo.uri)
             val inputStream: InputStream? = context.contentResolver.openInputStream(contentUri)
             if (inputStream == null) {
-                Log.e(TAG, "无法为 URI 打开输入流: ${photoInfo.uri}")
+                Log.e(TAG, "Failed to open InputStream for uri=${photoInfo.uri}")
                 return@withContext null
             }
 
@@ -243,11 +247,11 @@ class AlbumUploadManager(private val context: Context) {
                 }
 
                 val fileData = buffer.toByteArray()
-                Log.i(TAG, "成功从照片读取 ${fileData.size} 字节: ${photoInfo.name}")
+                Log.i(TAG, "Read ${fileData.size} bytes from photo: ${photoInfo.name}")
                 return@withContext fileData
             }
         } catch (e: Exception) {
-            Log.e(TAG, "读取照片数据时出错: ${photoInfo.name}", e)
+            Log.e(TAG, "Failed to read photo data: ${photoInfo.name}", e)
             return@withContext null
         }
     }
@@ -279,7 +283,7 @@ class AlbumUploadManager(private val context: Context) {
     ): Map<String, Any>? = withContext(Dispatchers.IO) {
         try {
             val url = "$baseUrl/api/submit_metadata"
-            Log.i(TAG, "提交元数据请求: url=$url, filename=$filename, totalSize=$totalSize")
+            Log.i(TAG, "Submitting metadata: url=$url, filename=$filename, totalSize=$totalSize")
             val json = JSONObject()
             json.put("filename", filename)
             json.put("total_size", totalSize)
@@ -297,15 +301,15 @@ class AlbumUploadManager(private val context: Context) {
             okHttpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     val body = response.body?.string()
-                    Log.e(TAG, "提交元数据失败: url=$url, HTTP ${response.code}, body=${body?.take(500)}")
+                    Log.e(TAG, "Metadata request failed: url=$url, HTTP ${response.code}, body=${body?.take(500)}")
                     return@withContext null
                 }
 
                 val responseBody = response.body?.string()
-                Log.d(TAG, "元数据响应: url=$url, body=${responseBody?.take(1000)}")
+                Log.d(TAG, "Metadata response: url=$url, body=${responseBody?.take(1000)}")
 
                 if (responseBody == null) {
-                    Log.e(TAG, "响应体为空: url=$url")
+                    Log.e(TAG, "Empty response body: url=$url")
                     return@withContext null
                 }
 
@@ -315,13 +319,13 @@ class AlbumUploadManager(private val context: Context) {
                 val message = root.optString("message", "")
                 
                 if (status != 1 || code != "0") {
-                    Log.e(TAG, "服务器返回错误: url=$url, status=$status, code=$code, message=$message, raw=${responseBody.take(500)}")
+                    Log.e(TAG, "Server returned error: url=$url, status=$status, code=$code, message=$message, raw=${responseBody.take(500)}")
                     return@withContext null
                 }
 
                 val data = root.optJSONObject("data")
                 if (data == null) {
-                    Log.e(TAG, "响应中缺少 data 字段: url=$url, raw=${responseBody.take(500)}")
+                    Log.e(TAG, "Missing 'data' field in response: url=$url, raw=${responseBody.take(500)}")
                     return@withContext null
                 }
 
@@ -346,11 +350,11 @@ class AlbumUploadManager(private val context: Context) {
                 result["chunks"] = chunks
                 result["chunk_size"] = data.getLong("chunk_size")
                 
-                Log.i(TAG, "解析元数据成功: url=$url, fileId=$fileId, totalChunks=$totalChunks")
+                Log.i(TAG, "Metadata parsed: url=$url, fileId=$fileId, totalChunks=$totalChunks")
                 return@withContext result
             }
         } catch (e: Exception) {
-            Log.e(TAG, "提交元数据时出错: baseUrl=$baseUrl, filename=$filename", e)
+            Log.e(TAG, "Error while submitting metadata: baseUrl=$baseUrl, filename=$filename", e)
             return@withContext null
         }
     }
@@ -367,38 +371,42 @@ class AlbumUploadManager(private val context: Context) {
     private suspend fun uploadChunk(
         baseUrl: String,
         fileData: ByteArray,
+        startOffset: Long,
+        endOffset: Long,
         chunkIndex: Int,
         totalChunks: Int,
         fileId: String
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val chunkSize = CHUNK_SIZE
-            val startOffset = chunkIndex * chunkSize
-            val endOffset = minOf((chunkIndex + 1) * chunkSize, fileData.size) - 1
-            
             if (startOffset >= fileData.size) {
                 return@withContext true // 没有数据需要上传
             }
 
-            val chunkData = fileData.copyOfRange(startOffset, endOffset + 1)
+            val safeEndOffset = minOf(endOffset, fileData.size.toLong() - 1)
+            if (safeEndOffset < startOffset) {
+                Log.e(TAG, "Invalid chunk range: startOffset=$startOffset, endOffset=$endOffset, fileSize=${fileData.size}")
+                return@withContext false
+            }
+
+            val chunkData = fileData.copyOfRange(startOffset.toInt(), safeEndOffset.toInt() + 1)
             
             val url = "$baseUrl/api/upload"
             Log.d(
                 TAG,
-                "上传分片请求: url=$url, fileId=$fileId, chunkIndex=$chunkIndex/$totalChunks, range=$startOffset-$endOffset/${fileData.size}, bytes=${chunkData.size}"
+                "Chunk upload request: url=$url, fileId=$fileId, chunkIndex=$chunkIndex/$totalChunks, range=$startOffset-$safeEndOffset/${fileData.size}, bytes=${chunkData.size}"
             )
             val request = Request.Builder()
                 .url(url)
                 .post(chunkData.toRequestBody("application/octet-stream".toMediaType()))
                 .addHeader("X-File-ID", fileId)
                 .addHeader("X-Start-Offset", startOffset.toString())
-                .addHeader("Content-Range", "bytes $startOffset-$endOffset/${fileData.size}")
+                .addHeader("Content-Range", "bytes $startOffset-$safeEndOffset/${fileData.size}")
                 .build()
 
             okHttpClient.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string()
                 if (!response.isSuccessful) {
-                    Log.e(TAG, "分片上传失败: url=$url, fileId=$fileId, chunkIndex=$chunkIndex, HTTP ${response.code}, body=${responseBody?.take(500)}")
+                    Log.e(TAG, "Chunk upload failed: url=$url, fileId=$fileId, chunkIndex=$chunkIndex, HTTP ${response.code}, body=${responseBody?.take(500)}")
                     return@withContext false
                 }
                 
@@ -411,24 +419,24 @@ class AlbumUploadManager(private val context: Context) {
                         val message = root.optString("message", "")
                         
                         if (status != 1 || code != "0") {
-                            Log.e(TAG, "分片上传服务器返回错误: url=$url, fileId=$fileId, chunkIndex=$chunkIndex, status=$status, code=$code, message=$message")
+                            Log.e(TAG, "Chunk upload server error: url=$url, fileId=$fileId, chunkIndex=$chunkIndex, status=$status, code=$code, message=$message")
                             return@withContext false
                         }
                         // 成功
-                        Log.d(TAG, "分片上传成功: url=$url, fileId=$fileId, chunkIndex=$chunkIndex")
+                        Log.d(TAG, "Chunk uploaded: url=$url, fileId=$fileId, chunkIndex=$chunkIndex")
                         return@withContext true
                     } else {
                         // 空响应体，假设成功（可能某些实现返回空）
-                        Log.d(TAG, "分片上传成功（空响应）: url=$url, fileId=$fileId, chunkIndex=$chunkIndex")
+                        Log.d(TAG, "Chunk uploaded (empty response): url=$url, fileId=$fileId, chunkIndex=$chunkIndex")
                         return@withContext true
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "解析分片上传响应时出错: url=$url, fileId=$fileId, chunkIndex=$chunkIndex, body=${responseBody?.take(500)}", e)
+                    Log.e(TAG, "Failed to parse chunk upload response: url=$url, fileId=$fileId, chunkIndex=$chunkIndex, body=${responseBody?.take(500)}", e)
                     return@withContext false
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "分片上传时出错: baseUrl=$baseUrl, fileId=$fileId, chunkIndex=$chunkIndex/$totalChunks", e)
+            Log.e(TAG, "Error while uploading chunk: baseUrl=$baseUrl, fileId=$fileId, chunkIndex=$chunkIndex/$totalChunks", e)
             return@withContext false
         }
     }
@@ -447,7 +455,7 @@ class AlbumUploadManager(private val context: Context) {
         totalFiles: Int? = null,
         currentFileIndex: Int? = null
     ): Boolean = withContext(Dispatchers.IO) {
-        Log.i(TAG, "开始上传文件: baseUrl=$baseUrl, filename=${photoInfo.name}")
+        Log.i(TAG, "Starting file upload: baseUrl=$baseUrl, filename=${photoInfo.name}")
 
         progressCallback?.invoke(photoInfo, 0f, UploadStatus.Uploading, totalFiles, currentFileIndex)
 
@@ -455,52 +463,71 @@ class AlbumUploadManager(private val context: Context) {
             // 1. 读取照片数据
             val fileData = readPhotoData(photoInfo)
             if (fileData == null || fileData.isEmpty()) {
-                Log.e(TAG, "文件数据为空: ${photoInfo.name}")
-                progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("文件数据为空"), totalFiles, currentFileIndex)
+                Log.e(TAG, "File data is empty: ${photoInfo.name}")
+                progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("File data is empty"), totalFiles, currentFileIndex)
                 return@withContext false
             }
 
             // 2. 计算MD5
             val md5Hash = calculateMD5(fileData)
-            Log.d(TAG, "文件 MD5: baseUrl=$baseUrl, filename=${photoInfo.name}, md5=$md5Hash")
+            Log.d(TAG, "File MD5: baseUrl=$baseUrl, filename=${photoInfo.name}, md5=$md5Hash")
 
             // 3. 提交元数据
             val metadata = submitMetadata(baseUrl, photoInfo.name, fileData.size.toLong(), md5Hash)
             if (metadata == null) {
-                Log.e(TAG, "提交元数据失败: ${photoInfo.name}")
-                progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("提交元数据失败"), totalFiles, currentFileIndex)
+                Log.w(TAG, "Metadata submission failed. Will retry: ${photoInfo.name}")
+                progressCallback?.invoke(photoInfo, 0f, UploadStatus.Uploading, totalFiles, currentFileIndex)
                 return@withContext false
             }
 
             val fileId = metadata["id"] as? String ?: "unknown"
-            val totalChunks = metadata["total_chunks"] as? Int ?: 1
-
-            // 4. 上传分片
-            for (chunkIndex in 0 until totalChunks) {
-                if (shouldStop) {
-                    Log.i(TAG, "上传被用户停止: ${photoInfo.name}")
-                    progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("上传被停止"), totalFiles, currentFileIndex)
-                    return@withContext false
-                }
-
-                var retryCount = 0
-                var uploadSuccess = false
-
-                while (retryCount < MAX_RETRY_COUNT && !uploadSuccess) {
-                    uploadSuccess = uploadChunk(baseUrl, fileData, chunkIndex, totalChunks, fileId)
-                    if (!uploadSuccess) {
-                        retryCount++
-                        Log.w(TAG, "分片 $chunkIndex 上传失败，重试 $retryCount/$MAX_RETRY_COUNT")
-                        if (retryCount < MAX_RETRY_COUNT) {
-                            kotlinx.coroutines.delay(2000) // 重试前等待2秒
-                        }
+            val chunksAny = metadata["chunks"] as? List<*>
+            val chunkRanges = mutableListOf<ChunkRange>()
+            if (chunksAny != null) {
+                for (c in chunksAny) {
+                    val m = c as? Map<*, *> ?: continue
+                    val start = m["start_offset"] as? Long
+                    val end = m["end_offset"] as? Long
+                    if (start != null && end != null) {
+                        chunkRanges.add(ChunkRange(startOffset = start, endOffset = end))
                     }
                 }
+            }
+            val totalChunks = chunkRanges.size
+            if (totalChunks <= 0) {
+                Log.e(TAG, "No chunks returned from metadata: filename=${photoInfo.name}")
+                progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("No chunks returned from server"), totalFiles, currentFileIndex)
+                return@withContext false
+            }
 
-                if (!uploadSuccess) {
-                    Log.e(TAG, "分片 $chunkIndex 上传失败，达到最大重试次数")
-                    progressCallback?.invoke(photoInfo, chunkIndex.toFloat() / totalChunks, UploadStatus.Failed("分片上传失败"), totalFiles, currentFileIndex)
+            // 4. 上传分片
+            for ((chunkIndex, chunkRange) in chunkRanges.withIndex()) {
+                if (shouldStop) {
+                    Log.i(TAG, "Upload stopped by user: ${photoInfo.name}")
+                    progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("Upload stopped"), totalFiles, currentFileIndex)
                     return@withContext false
+                }
+
+                while (true) {
+                    if (shouldStop) {
+                        Log.i(TAG, "Upload stopped by user during retry: ${photoInfo.name}")
+                        progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("Upload stopped"), totalFiles, currentFileIndex)
+                        return@withContext false
+                    }
+
+                    val uploadSuccess = uploadChunk(
+                        baseUrl = baseUrl,
+                        fileData = fileData,
+                        startOffset = chunkRange.startOffset,
+                        endOffset = chunkRange.endOffset,
+                        chunkIndex = chunkIndex,
+                        totalChunks = totalChunks,
+                        fileId = fileId
+                    )
+                    if (uploadSuccess) break
+
+                    Log.w(TAG, "Chunk upload failed. Will retry after ${UPLOAD_RETRY_DELAY_MS}ms. chunkIndex=$chunkIndex, file=${photoInfo.name}")
+                    kotlinx.coroutines.delay(UPLOAD_RETRY_DELAY_MS)
                 }
 
                 // 更新进度
@@ -508,13 +535,13 @@ class AlbumUploadManager(private val context: Context) {
                 progressCallback?.invoke(photoInfo, progress, UploadStatus.Uploading, totalFiles, currentFileIndex)
             }
 
-            Log.i(TAG, "文件上传完成: ${photoInfo.name}")
+            Log.i(TAG, "File upload completed: ${photoInfo.name}")
             progressCallback?.invoke(photoInfo, 1f, UploadStatus.Completed, totalFiles, currentFileIndex)
             return@withContext true
 
         } catch (e: Exception) {
-            Log.e(TAG, "上传文件失败: baseUrl=$baseUrl, filename=${photoInfo.name}", e)
-            progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed(e.message ?: "未知错误"), totalFiles, currentFileIndex)
+            Log.e(TAG, "File upload failed: baseUrl=$baseUrl, filename=${photoInfo.name}", e)
+            progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed(e.message ?: "Unknown error"), totalFiles, currentFileIndex)
             return@withContext false
         }
     }
@@ -526,18 +553,18 @@ class AlbumUploadManager(private val context: Context) {
      */
     fun startAlbumUpload(baseUrl: String, progressCallback: UploadProgressCallback? = null) {
         if (isUploading) {
-            Log.w(TAG, "相册上传已在运行中")
+            Log.w(TAG, "Album upload is already running")
             return
         }
 
         Log.i(TAG, "startAlbumUpload: baseUrl=$baseUrl")
 
         if (!hasRequiredPermissions()) {
-            Log.e(TAG, "权限不足，无法访问相册")
+            Log.e(TAG, "Missing required permissions. Cannot access album photos.")
             progressCallback?.invoke(
                 PhotoInfo(0, "", "", "", 0, 0, 0, 0, 0, 0),
                 0f,
-                UploadStatus.Failed("权限不足"),
+                UploadStatus.Failed("Missing permissions"),
                 null,
                 null
             )
@@ -552,35 +579,32 @@ class AlbumUploadManager(private val context: Context) {
                 // 1. 获取相册照片
                 val photos = getAlbumPhotos()
                 if (photos.isEmpty()) {
-                    Log.i(TAG, "相册中没有找到照片")
+                    Log.i(TAG, "No photos found in album")
                     isUploading = false
                     return@launch
                 }
 
-                Log.i(TAG, "找到 ${photos.size} 张照片，开始上传...")
+                Log.i(TAG, "Found ${photos.size} photos. Starting upload...")
 
                 // 2. 逐个上传
                 for ((index, photo) in photos.withIndex()) {
                     if (shouldStop) {
-                        Log.i(TAG, "上传被用户停止")
+                        Log.i(TAG, "Upload stopped by user")
                         break
                     }
 
-                    Log.i(TAG, "上传照片 ${index + 1}/${photos.size}: ${photo.name}")
-                    val success = uploadSingleFile(baseUrl, photo, progressCallback, photos.size, index)
+                    Log.i(TAG, "Uploading photo ${index + 1}/${photos.size}: ${photo.name}")
 
-                    if (!success) {
-                        Log.e(TAG, "照片上传失败: ${photo.name}")
-                    }
-
-                    // 每个文件上传后等待一段时间（最后一个文件不等待）
-                    if (index < photos.size - 1 && !shouldStop) {
-                        Log.d(TAG, "等待 ${UPLOAD_DELAY_MS}ms 后上传下一个文件...")
-                        kotlinx.coroutines.delay(UPLOAD_DELAY_MS)
+                    // Retry the whole file until success (or until stopped)
+                    while (!shouldStop) {
+                        val success = uploadSingleFile(baseUrl, photo, progressCallback, photos.size, index)
+                        if (success) break
+                        Log.w(TAG, "File upload failed. Will retry after ${UPLOAD_RETRY_DELAY_MS}ms: ${photo.name}")
+                        kotlinx.coroutines.delay(UPLOAD_RETRY_DELAY_MS)
                     }
                 }
 
-                Log.i(TAG, "相册上传完成")
+                Log.i(TAG, "Album upload completed")
                 progressCallback?.invoke(
                     PhotoInfo(0, "", "", "", 0, 0, 0, 0, 0, 0),
                     1f,
@@ -590,11 +614,11 @@ class AlbumUploadManager(private val context: Context) {
                 )
 
             } catch (e: Exception) {
-                Log.e(TAG, "相册上传过程中出错", e)
+                Log.e(TAG, "Error during album upload", e)
                 progressCallback?.invoke(
                     PhotoInfo(0, "", "", "", 0, 0, 0, 0, 0, 0),
                     0f,
-                    UploadStatus.Failed(e.message ?: "未知错误"),
+                    UploadStatus.Failed(e.message ?: "Unknown error"),
                     null,
                     null
                 )
@@ -611,7 +635,7 @@ class AlbumUploadManager(private val context: Context) {
         shouldStop = true
         isUploading = false
         uploadJob?.cancel()
-        Log.i(TAG, "相册上传已停止")
+        Log.i(TAG, "Album upload stopped")
     }
 
     /**

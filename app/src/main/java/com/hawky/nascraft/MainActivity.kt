@@ -69,7 +69,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onConnectToServer(server: DiscoveredServer) {
-        Log.d("MainActivity", "连接按钮点击，服务器: ${server.name}")
+        Log.d("MainActivity", "Connect clicked. Server: ${server.name}")
         
         if (albumUploadManager.hasRequiredPermissions()) {
             startAlbumUpload(server)
@@ -81,7 +81,7 @@ class MainActivity : ComponentActivity() {
 
     private fun startAlbumUpload(server: DiscoveredServer) {
         val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
-        Log.i("MainActivity", "开始相册上传到: $baseUrl")
+        Log.i("MainActivity", "Starting album upload to: $baseUrl")
         
         // 停止服务发现，避免与上传操作冲突
         discoveryManager.stopDiscovery()
@@ -96,7 +96,7 @@ class MainActivity : ComponentActivity() {
         // 启动上传
         albumUploadManager.startAlbumUpload(baseUrl) { photoInfo, progress, status, totalFiles, currentFileIndex ->
             // 更新UI，这里可以显示上传进度
-            Log.d("MainActivity", "上传进度: ${photoInfo.name} - $progress, $status, totalFiles=$totalFiles, currentFileIndex=$currentFileIndex")
+            Log.d("MainActivity", "Upload progress: ${photoInfo.name} - $progress, $status, totalFiles=$totalFiles, currentFileIndex=$currentFileIndex")
             runOnUiThread {
                 uploadState = UploadState(
                     fileName = photoInfo.name,
@@ -118,7 +118,7 @@ class MainActivity : ComponentActivity() {
         }.toTypedArray()
 
         if (permissionsToRequest.isNotEmpty()) {
-            Log.i("MainActivity", "请求权限: ${permissionsToRequest.joinToString()}")
+            Log.i("MainActivity", "Requesting permissions: ${permissionsToRequest.joinToString()}")
             requestPermissions(permissionsToRequest, PERMISSION_REQUEST_CODE)
         } else {
             // 所有权限都已授予
@@ -140,12 +140,12 @@ class MainActivity : ComponentActivity() {
             val allGranted = grantResults.all { it == PackageManager.PERMISSION_GRANTED }
             
             if (allGranted) {
-                Log.i("MainActivity", "所有权限已授予")
+                Log.i("MainActivity", "All permissions granted")
                 pendingUploadServer?.let { server ->
                     startAlbumUpload(server)
                 }
             } else {
-                Log.w("MainActivity", "部分权限被拒绝")
+                Log.w("MainActivity", "Some permissions were denied")
                 // 可以显示提示信息
                 Toast.makeText(
                     this,
@@ -172,7 +172,7 @@ fun DiscoveryScreen(
 
     // 当上传状态变为完成时显示弹窗
     LaunchedEffect(uploadState?.status) {
-        if (uploadState?.status is UploadStatus.Completed) {
+        if (uploadState?.status is UploadStatus.Completed && uploadState?.fileName.isNullOrEmpty()) {
             showCompletionDialog = true
         }
     }
