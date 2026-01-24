@@ -310,9 +310,12 @@ class AlbumUploadManager(private val context: Context) {
                 }
 
                 val root = JSONObject(responseBody)
-                val code = root.optInt("code", -1)
-                if (code != 200) {
-                    Log.e(TAG, "服务器返回错误代码: url=$url, code=$code, raw=${responseBody.take(500)}")
+                val status = root.optInt("status", -1)
+                val code = root.optString("code", "-1")
+                val message = root.optString("message", "")
+                
+                if (status != 1 || code != "0") {
+                    Log.e(TAG, "服务器返回错误: url=$url, status=$status, code=$code, message=$message, raw=${responseBody.take(500)}")
                     return@withContext null
                 }
 
@@ -393,12 +396,36 @@ class AlbumUploadManager(private val context: Context) {
                 .build()
 
             okHttpClient.newCall(request).execute().use { response ->
-                val success = response.isSuccessful
-                if (!success) {
-                    val body = response.body?.string()
-                    Log.e(TAG, "分片上传失败: url=$url, fileId=$fileId, chunkIndex=$chunkIndex, HTTP ${response.code}, body=${body?.take(500)}")
+                val responseBody = response.body?.string()
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "分片上传失败: url=$url, fileId=$fileId, chunkIndex=$chunkIndex, HTTP ${response.code}, body=${responseBody?.take(500)}")
+                    return@withContext false
                 }
-                return@withContext success
+                
+                // 解析JSON响应并检查status和code字段
+                try {
+                    if (responseBody != null && responseBody.isNotEmpty()) {
+                        val root = JSONObject(responseBody)
+                        val status = root.optInt("status", -1)
+                        val code = root.optString("code", "-1")
+                        val message = root.optString("message", "")
+                        
+                        if (status != 1 || code != "0") {
+                            Log.e(TAG, "分片上传服务器返回错误: url=$url, fileId=$fileId, chunkIndex=$chunkIndex, status=$status, code=$code, message=$message")
+                            return@withContext false
+                        }
+                        // 成功
+                        Log.d(TAG, "分片上传成功: url=$url, fileId=$fileId, chunkIndex=$chunkIndex")
+                        return@withContext true
+                    } else {
+                        // 空响应体，假设成功（可能某些实现返回空）
+                        Log.d(TAG, "分片上传成功（空响应）: url=$url, fileId=$fileId, chunkIndex=$chunkIndex")
+                        return@withContext true
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "解析分片上传响应时出错: url=$url, fileId=$fileId, chunkIndex=$chunkIndex, body=${responseBody?.take(500)}", e)
+                    return@withContext false
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "分片上传时出错: baseUrl=$baseUrl, fileId=$fileId, chunkIndex=$chunkIndex/$totalChunks", e)
