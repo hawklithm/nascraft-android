@@ -1,32 +1,53 @@
 package com.hawky.nascraft
 
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
-import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.LifecycleOwner
 import com.hawky.nascraft.ui.theme.NascraftandroidTheme
-import com.hawky.nascraft.UploadStatus
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class UploadState(
     val fileName: String,
@@ -39,74 +60,74 @@ data class UploadState(
 class MainActivity : ComponentActivity() {
     private lateinit var discoveryManager: DiscoveryManager
     private lateinit var albumUploadManager: AlbumUploadManager
-    
+    private lateinit var fileUploadManager: FileUploadManager
+
     private var uploadState by mutableStateOf<UploadState?>(null)
-    
+    private var currentScreen by mutableStateOf<Screen>(Screen.DISCOVERY)
+    private var connectedServer by mutableStateOf<DiscoveredServer?>(null)
+
     private var pendingUploadServer: DiscoveredServer? = null
     private val PERMISSION_REQUEST_CODE = 1001
+
+    enum class Screen {
+        DISCOVERY,
+        SERVER_DETAIL
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        discoveryManager = DiscoveryManager()
+        discoveryManager = DiscoveryManager(this)
         albumUploadManager = AlbumUploadManager(this)
+        fileUploadManager = FileUploadManager(this)
+
+        // 不再在启动时自动开始服务发现，等待用户点击按钮
+
         setContent {
             NascraftandroidTheme {
-                DiscoveryScreen(
+                MainScreen(
+                    currentScreen = currentScreen,
+                    connectedServer = connectedServer,
+                    uploadState = uploadState,
                     discoveryManager = discoveryManager,
-                    onConnectClick = { server ->
+                    albumUploadManager = albumUploadManager,
+                    fileUploadManager = fileUploadManager,
+                    onConnectToServer = { server ->
                         onConnectToServer(server)
                     },
-                    uploadState = uploadState
+                    onStartUpload = { server ->
+                        startAlbumUpload(server)
+                    },
+                    onStopUpload = {
+                        albumUploadManager.stopAlbumUpload()
+                        uploadState = null
+                    },
+                    onBackToDiscovery = {
+                        currentScreen = Screen.DISCOVERY
+                        connectedServer = null
+                        albumUploadManager.stopAlbumUpload()
+                    }
                 )
             }
         }
     }
-
+    
     override fun onDestroy() {
         super.onDestroy()
+        // 停止所有服务发现
         discoveryManager.stopDiscovery()
+        discoveryManager.stopMDNSDiscovery()
     }
 
     private fun onConnectToServer(server: DiscoveredServer) {
         Log.d("MainActivity", "Connect clicked. Server: ${server.name}")
-        
-        if (albumUploadManager.hasRequiredPermissions()) {
-            startAlbumUpload(server)
-        } else {
-            pendingUploadServer = server
-            requestAlbumPermissions()
-        }
-    }
 
-    private fun startAlbumUpload(server: DiscoveredServer) {
-        val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
-        Log.i("MainActivity", "Starting album upload to: $baseUrl")
-        
+        // 保存连接的服务器并切换到详情页面
+        connectedServer = server
+        currentScreen = Screen.SERVER_DETAIL
+
         // 停止服务发现，避免与上传操作冲突
         discoveryManager.stopDiscovery()
-        
-        // 设置初始上传状态
-        uploadState = UploadState(
-            fileName = "准备上传...",
-            progress = 0f,
-            status = UploadStatus.Uploading
-        )
-        
-        // 启动上传
-        albumUploadManager.startAlbumUpload(baseUrl) { photoInfo, progress, status, totalFiles, currentFileIndex ->
-            // 更新UI，这里可以显示上传进度
-            Log.d("MainActivity", "Upload progress: ${photoInfo.name} - $progress, $status, totalFiles=$totalFiles, currentFileIndex=$currentFileIndex")
-            runOnUiThread {
-                uploadState = UploadState(
-                    fileName = photoInfo.name,
-                    progress = progress,
-                    status = status,
-                    totalFiles = totalFiles,
-                    currentFileIndex = currentFileIndex
-                )
-            }
-        }
     }
 
     private fun requestAlbumPermissions() {
@@ -135,15 +156,13 @@ class MainActivity : ComponentActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        
+
         if (requestCode == PERMISSION_REQUEST_CODE) {
             val allGranted = grantResults.all { it == PackageManager.PERMISSION_GRANTED }
-            
+
             if (allGranted) {
                 Log.i("MainActivity", "All permissions granted")
-                pendingUploadServer?.let { server ->
-                    startAlbumUpload(server)
-                }
+                // 权限已授予，用户需要在详情页面手动点击开始上传
             } else {
                 Log.w("MainActivity", "Some permissions were denied")
                 // 可以显示提示信息
@@ -153,8 +172,97 @@ class MainActivity : ComponentActivity() {
                     Toast.LENGTH_LONG
                 ).show()
             }
-            
+
             pendingUploadServer = null
+        }
+    }
+
+    /**
+     * 开始相册上传
+     */
+    fun startAlbumUpload(server: DiscoveredServer) {
+        if (!albumUploadManager.hasRequiredPermissions()) {
+            pendingUploadServer = server
+            requestAlbumPermissions()
+            return
+        }
+
+        val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
+        Log.i("MainActivity", "Starting album upload to: $baseUrl")
+
+        // 设置初始上传状态
+        uploadState = UploadState(
+            fileName = "准备上传...",
+            progress = 0f,
+            status = UploadStatus.Uploading
+        )
+
+        // 启动上传
+        albumUploadManager.startAlbumUpload(baseUrl) { photoInfo, progress, status, totalFiles, currentFileIndex ->
+            // 更新UI，这里可以显示上传进度
+            Log.d("MainActivity", "Upload progress: ${photoInfo.name} - $progress, $status, totalFiles=$totalFiles, currentFileIndex=$currentFileIndex")
+            runOnUiThread {
+                uploadState = UploadState(
+                    fileName = photoInfo.name,
+                    progress = progress,
+                    status = status,
+                    totalFiles = totalFiles,
+                    currentFileIndex = currentFileIndex
+                )
+            }
+
+            // 上传完成提示
+            if (status is UploadStatus.Completed && photoInfo.id == 0L && totalFiles != null && currentFileIndex != null) {
+                // photoInfo.id == 0L 表示这是一个总体完成通知
+                runOnUiThread {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "全部照片已上传完成！（共${totalFiles}张照片）",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    Log.i("MainActivity", "All photos uploaded successfully: $totalFiles files")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 主屏幕 - 根据当前页面显示不同内容
+ */
+@Composable
+fun MainScreen(
+    currentScreen: MainActivity.Screen,
+    connectedServer: DiscoveredServer?,
+    uploadState: UploadState?,
+    discoveryManager: DiscoveryManager,
+    albumUploadManager: AlbumUploadManager,
+    fileUploadManager: FileUploadManager,
+    onConnectToServer: (DiscoveredServer) -> Unit,
+    onStartUpload: (DiscoveredServer) -> Unit,
+    onStopUpload: () -> Unit,
+    onBackToDiscovery: () -> Unit
+) {
+    when (currentScreen) {
+        MainActivity.Screen.DISCOVERY -> {
+            DiscoveryScreen(
+                discoveryManager = discoveryManager,
+                onConnectClick = onConnectToServer,
+                uploadState = uploadState
+            )
+        }
+        MainActivity.Screen.SERVER_DETAIL -> {
+            connectedServer?.let { server ->
+                ServerDetailScreen(
+                    server = server,
+                    albumUploadManager = albumUploadManager,
+                    fileUploadManager = fileUploadManager,
+                    uploadState = uploadState,
+                    onBackClick = onBackToDiscovery,
+                    onStartUpload = onStartUpload,
+                    onStopUpload = onStopUpload
+                )
+            }
         }
     }
 }
@@ -169,6 +277,7 @@ fun DiscoveryScreen(
     var discoveryInProgress by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
     var showCompletionDialog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     // 当上传状态变为完成时显示弹窗
     LaunchedEffect(uploadState?.status) {
@@ -254,11 +363,43 @@ fun DiscoveryScreen(
                 onClick = {
                     discoveryInProgress = true
                     coroutineScope.launch {
-                        discoveryManager.clearDiscoveredServers()
-                        discoveryManager.startDiscovery()
-                        // 模拟超时后停止发现
-                        delay(DiscoveryManager.DISCOVERY_TIMEOUT_SECONDS * 1000L)
-                        discoveryInProgress = false
+                        try {
+                            discoveryManager.clearDiscoveredServers()
+
+                            // 双向发现模式：同时启动主动探测和被动监听
+
+                            // UDP双向发现：主动探测 + 被动监听服务端广播
+                            val udpSuccess = discoveryManager.startDiscovery()
+                            Log.d("MainActivity", "UDP双向发现 started (主动+被动): $udpSuccess")
+
+                            // mDNS双向发现：主动探测 + 被动监听服务端广播（由Android NSD自动处理）
+                            val mdnsSuccess = discoveryManager.startMDNSDiscovery()
+                            Log.d("MainActivity", "mDNS双向发现 started (主动+被动): $mdnsSuccess")
+
+                            // SSDP双向发现：主动M-SEARCH + 被动监听NOTIFY
+                            val ssdpSuccess = discoveryManager.startSSDPDiscovery()
+                            Log.d("MainActivity", "SSDP双向发现 started (M-SEARCH+NOTIFY): $ssdpSuccess")
+
+                            if (!udpSuccess) {
+                                Log.e("MainActivity", "UDP双向发现失败，尝试备用方式")
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(
+                                        context,
+                                        "UDP发现失败，尝试备用方式...",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+
+                            // 等待UDP主通道完成（5秒），mDNS继续运行作为长连接
+                            delay(DiscoveryManager.DISCOVERY_TIMEOUT_SECONDS * 1000L)
+                        } finally {
+                            // Always stop discovery so next run is reliable.
+                            discoveryManager.stopDiscovery()
+                            discoveryManager.stopMDNSDiscovery()
+                            discoveryManager.stopSSDPDiscovery()
+                            discoveryInProgress = false
+                        }
                     }
                 },
                 enabled = !discoveryInProgress,
@@ -307,7 +448,13 @@ fun DiscoveryScreen(
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             CircularProgressIndicator()
                             Spacer(modifier = Modifier.height(16.dp))
-                            Text("正在扫描局域网...")
+                            Text("正在通过 mDNS 扫描服务...")
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "同时使用 UDP 作为辅助发现",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 } else {
@@ -389,6 +536,8 @@ fun ServerCard(
 fun DiscoveryScreenPreview() {
     NascraftandroidTheme {
         // 使用一个模拟的 DiscoveryManager 进行预览
-        DiscoveryScreen(DiscoveryManager(), onConnectClick = {}, uploadState = null)
+        // 注意：预览中不能使用真实的context，这里使用LocalContext.current
+        val context = LocalContext.current
+        DiscoveryScreen(DiscoveryManager(context), onConnectClick = {}, uploadState = null)
     }
 }

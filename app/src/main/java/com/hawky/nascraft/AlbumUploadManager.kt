@@ -283,7 +283,11 @@ class AlbumUploadManager(private val context: Context) {
     ): Map<String, Any>? = withContext(Dispatchers.IO) {
         try {
             val url = "$baseUrl/api/submit_metadata"
-            Log.i(TAG, "Submitting metadata: url=$url, filename=$filename, totalSize=$totalSize")
+            Log.i(TAG, "提交文件元数据到服务端（检查是否已上传）")
+            Log.d(TAG, "  URL: $url")
+            Log.d(TAG, "  文件名: $filename")
+            Log.d(TAG, "  文件大小: $totalSize bytes")
+            Log.d(TAG, "  文件MD5: $md5Hash")
             val json = JSONObject()
             json.put("filename", filename)
             json.put("total_size", totalSize)
@@ -329,6 +333,23 @@ class AlbumUploadManager(private val context: Context) {
                     return@withContext null
                 }
 
+                // 检查是否为重复文件（服务端已存在）
+                val skipped = data.optBoolean("skipped", false)
+                val result = mutableMapOf<String, Any>()
+                
+                if (skipped) {
+                    // 文件已存在，不需要上传分片
+                    result["skipped"] = true
+                    result["id"] = data.optString("id", "")
+                    result["filename"] = data.optString("filename", "")
+                    result["checksum"] = data.optString("checksum", "")
+                    result["file_path"] = data.optString("file_path", "")
+                    result["total_size"] = data.optLong("total_size", 0)
+                    Log.i(TAG, "检测到文件已存在（服务端返回skipped=true）: filename=$filename, md5=$md5Hash")
+                    return@withContext result
+                }
+                
+                // 新文件，需要解析分片信息
                 val fileId = data.getString("id")
                 val totalChunks = data.getInt("total_chunks")
                 val chunksArray = data.getJSONArray("chunks")
@@ -344,13 +365,13 @@ class AlbumUploadManager(private val context: Context) {
                     chunks.add(chunkMap)
                 }
 
-                val result = mutableMapOf<String, Any>()
                 result["id"] = fileId
                 result["total_chunks"] = totalChunks
                 result["chunks"] = chunks
                 result["chunk_size"] = data.getLong("chunk_size")
+                result["skipped"] = false
                 
-                Log.i(TAG, "Metadata parsed: url=$url, fileId=$fileId, totalChunks=$totalChunks")
+                Log.i(TAG, "Metadata parsed: url=$url, fileId=$fileId, totalChunks=$totalChunks, skipped=false")
                 return@withContext result
             }
         } catch (e: Exception) {
@@ -455,7 +476,11 @@ class AlbumUploadManager(private val context: Context) {
         totalFiles: Int? = null,
         currentFileIndex: Int? = null
     ): Boolean = withContext(Dispatchers.IO) {
-        Log.i(TAG, "Starting file upload: baseUrl=$baseUrl, filename=${photoInfo.name}")
+        Log.i(TAG, "══════════════════════════════════════════════════════════════")
+        Log.i(TAG, "开始上传文件: ${photoInfo.name} (${currentFileIndex ?: "?"}/${totalFiles ?: "?"})")
+        Log.i(TAG, "  文件大小: ${photoInfo.size} bytes")
+        Log.i(TAG, "  服务器地址: $baseUrl")
+        Log.i(TAG, "══════════════════════════════════════════════════════════════")
 
         progressCallback?.invoke(photoInfo, 0f, UploadStatus.Uploading, totalFiles, currentFileIndex)
 
@@ -472,12 +497,31 @@ class AlbumUploadManager(private val context: Context) {
             val md5Hash = calculateMD5(fileData)
             Log.d(TAG, "File MD5: baseUrl=$baseUrl, filename=${photoInfo.name}, md5=$md5Hash")
 
-            // 3. 提交元数据
+            // 3. 提交元数据（包含去重检查）
             val metadata = submitMetadata(baseUrl, photoInfo.name, fileData.size.toLong(), md5Hash)
             if (metadata == null) {
                 Log.w(TAG, "Metadata submission failed. Will retry: ${photoInfo.name}")
                 progressCallback?.invoke(photoInfo, 0f, UploadStatus.Uploading, totalFiles, currentFileIndex)
                 return@withContext false
+            }
+
+            // 检查是否为重复文件（服务端已存在）
+            val skipped = metadata["skipped"] as? Boolean ?: false
+            if (skipped) {
+                val existingFileId = metadata["id"] as? String ?: ""
+                val existingFilename = metadata["filename"] as? String ?: ""
+                val existingChecksum = metadata["checksum"] as? String ?: ""
+                Log.i(TAG, "══════════════════════════════════════════════════════════════")
+                Log.i(TAG, "文件已存在，跳过上传（MD5去重）")
+                Log.i(TAG, "  当前文件名: ${photoInfo.name}")
+                Log.i(TAG, "  当前文件MD5: $md5Hash")
+                Log.i(TAG, "  当前文件大小: ${fileData.size} bytes")
+                Log.i(TAG, "  服务端文件ID: $existingFileId")
+                Log.i(TAG, "  服务端文件名: $existingFilename")
+                Log.i(TAG, "  服务端文件MD5: $existingChecksum")
+                Log.i(TAG, "══════════════════════════════════════════════════════════════")
+                progressCallback?.invoke(photoInfo, 1f, UploadStatus.Completed, totalFiles, currentFileIndex)
+                return@withContext true
             }
 
             val fileId = metadata["id"] as? String ?: "unknown"
@@ -535,7 +579,13 @@ class AlbumUploadManager(private val context: Context) {
                 progressCallback?.invoke(photoInfo, progress, UploadStatus.Uploading, totalFiles, currentFileIndex)
             }
 
-            Log.i(TAG, "File upload completed: ${photoInfo.name}")
+            Log.i(TAG, "══════════════════════════════════════════════════════════════")
+            Log.i(TAG, "文件上传完成: ${photoInfo.name}")
+            Log.i(TAG, "  文件大小: ${fileData.size} bytes")
+            Log.i(TAG, "  文件MD5: $md5Hash")
+            Log.i(TAG, "  服务端文件ID: $fileId")
+            Log.i(TAG, "  分片数量: $totalChunks")
+            Log.i(TAG, "══════════════════════════════════════════════════════════════")
             progressCallback?.invoke(photoInfo, 1f, UploadStatus.Completed, totalFiles, currentFileIndex)
             return@withContext true
 
@@ -586,6 +636,10 @@ class AlbumUploadManager(private val context: Context) {
 
                 Log.i(TAG, "Found ${photos.size} photos. Starting upload...")
 
+                var successCount = 0
+                var skippedCount = 0
+                var failedCount = 0
+
                 // 2. 逐个上传
                 for ((index, photo) in photos.withIndex()) {
                     if (shouldStop) {
@@ -598,13 +652,25 @@ class AlbumUploadManager(private val context: Context) {
                     // Retry the whole file until success (or until stopped)
                     while (!shouldStop) {
                         val success = uploadSingleFile(baseUrl, photo, progressCallback, photos.size, index)
-                        if (success) break
+                        if (success) {
+                            successCount++
+                            // 检查是否是跳过的文件（通过日志判断）
+                            // 由于我们无法直接获取跳过信息，这里只是统计总数
+                            break
+                        }
+                        failedCount++
                         Log.w(TAG, "File upload failed. Will retry after ${UPLOAD_RETRY_DELAY_MS}ms: ${photo.name}")
                         kotlinx.coroutines.delay(UPLOAD_RETRY_DELAY_MS)
                     }
                 }
 
-                Log.i(TAG, "Album upload completed")
+                Log.i(TAG, "══════════════════════════════════════════════════════════════")
+                Log.i(TAG, "相册上传完成！统计信息：")
+                Log.i(TAG, "  总文件数: ${photos.size}")
+                Log.i(TAG, "  成功上传: $successCount")
+                Log.i(TAG, "  失败: $failedCount")
+                Log.i(TAG, "  注: 已上传过的文件会显示'文件已存在，跳过上传'日志")
+                Log.i(TAG, "══════════════════════════════════════════════════════════════")
                 progressCallback?.invoke(
                     PhotoInfo(0, "", "", "", 0, 0, 0, 0, 0, 0),
                     1f,
