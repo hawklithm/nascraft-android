@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,6 +23,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Description
+import coil.compose.AsyncImage
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -31,10 +35,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -64,6 +73,7 @@ fun UploadedFilesScreen(
 ) {
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
 
     var isLoading by remember { mutableStateOf(true) }
     var uploadedFiles by remember { mutableStateOf<List<UploadedFile>>(emptyList()) }
@@ -276,7 +286,7 @@ fun UploadedFilesScreen(
                     )
                 ) {
                     items(uploadedFiles, key = { it.fileId }) { file ->
-                        FileCard(file, fileUploadManager)
+                        FileCard(file, fileUploadManager, baseUrl)
                     }
 
                     // 加载更多指示器
@@ -310,78 +320,168 @@ fun UploadedFilesScreen(
 /**
  * 文件卡片
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FileCard(
     file: UploadedFile,
-    fileUploadManager: FileUploadManager
+    fileUploadManager: FileUploadManager,
+    baseUrl: String
 ) {
+    var showPreview by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp)
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            // 文件名和状态
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            // Thumbnail preview
+            Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .background(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(4.dp)
+                    )
+                    .then(
+                        if (file.thumbnailUrl != null) {
+                            Modifier.clickable { showPreview = true }
+                        } else {
+                            Modifier
+                        }
+                    ),
+                contentAlignment = Alignment.Center
             ) {
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = file.filename,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = fileUploadManager.formatFileSize(file.totalSize),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                val thumbnailFullUrl = if (file.thumbnailUrl != null) {
+                    "$baseUrl${file.thumbnailUrl}"
+                } else {
+                    null
                 }
 
-                // 状态标签
-                StatusChip(
-                    status = file.status,
-                    statusText = fileUploadManager.getStatusText(file.status)
-                )
+                if (!thumbnailFullUrl.isNullOrEmpty()) {
+                    AsyncImage(
+                        model = thumbnailFullUrl,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        alignment = Alignment.Center
+                    )
+                } else {
+                    // Show generic icon when no thumbnail
+                    val isImage = file.filename.lowercase().let {
+                        it.endsWith(".jpg") || it.endsWith(".jpeg") ||
+                        it.endsWith(".png") || it.endsWith(".gif") ||
+                        it.endsWith(".webp") || it.endsWith(".bmp")
+                    }
+                    if (isImage) {
+                        Icon(
+                            Icons.Default.Image,
+                            contentDescription = null,
+                            modifier = Modifier.size(24.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Icon(
+                            Icons.Default.Description,
+                            contentDescription = null,
+                            modifier = Modifier.size(24.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.width(16.dp))
 
-            // 文件信息
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier.weight(1f)
             ) {
-                Column {
-                    Text(
-                        text = "MD5: ${file.checksum.take(16)}...",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                // 文件名和状态
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            text = file.filename,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = fileUploadManager.formatFileSize(file.totalSize),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    // 状态标签
+                    StatusChip(
+                        status = file.status,
+                        statusText = fileUploadManager.getStatusText(file.status)
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 文件信息
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "MD5: ${file.checksum.take(16)}...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = fileUploadManager.formatTimestamp(file.lastUpdated),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
                     Text(
-                        text = fileUploadManager.formatTimestamp(file.lastUpdated),
+                        text = "文件ID: ${file.fileId.take(8)}...",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+            }
+        }
 
-                Text(
-                    text = "文件ID: ${file.fileId.take(8)}...",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        // Full-size image preview bottom sheet
+        if (showPreview && !file.thumbnailUrl.isNullOrEmpty()) {
+            ModalBottomSheet(
+                onDismissRequest = { showPreview = false },
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 600.dp)
+                        .background(MaterialTheme.colorScheme.surface),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val fullImageUrl = "$baseUrl/api/download/${file.fileId}"
+                    AsyncImage(
+                        model = fullImageUrl,
+                        contentDescription = file.filename,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        alignment = Alignment.Center
+                    )
+                }
             }
         }
     }

@@ -17,7 +17,8 @@ data class UploadedFile(
     val checksum: String,
     val status: Int,
     val filePath: String,
-    val lastUpdated: Long
+    val lastUpdated: Long,
+    val thumbnailUrl: String?
 ) {
     companion object {
         private const val TAG = "UploadedFile"
@@ -131,7 +132,12 @@ class FileUploadManager(private val context: android.content.Context) {
                     checksum = fileObj.getString("checksum"),
                     status = fileObj.getInt("status"),
                     filePath = fileObj.getString("file_path"),
-                    lastUpdated = fileObj.getLong("last_updated")
+                    lastUpdated = fileObj.getLong("last_updated"),
+                    thumbnailUrl = if (fileObj.has("thumbnail_url") && !fileObj.isNull("thumbnail_url")) {
+                        fileObj.getString("thumbnail_url")
+                    } else {
+                        null
+                    }
                 )
                 files.add(file)
             }

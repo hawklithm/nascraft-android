@@ -541,6 +541,11 @@ class DiscoveryManager(private val context: Context) {
                     // 正常超时，继续监听
                 } catch (e: CancellationException) {
                     throw e
+                } catch (e: java.net.SocketException) {
+                    // EBADF (Bad file descriptor) means socket is already closed
+                    // Exit the loop immediately
+                    Log.w(TAG, "Socket closed in UDP broadcast listener, exiting: ${e.message}")
+                    break
                 } catch (e: Exception) {
                     Log.w(TAG, "Error in UDP broadcast listener", e)
                 }
@@ -685,6 +690,11 @@ class DiscoveryManager(private val context: Context) {
                     // normal, just continue waiting
                 } catch (e: CancellationException) {
                     throw e
+                } catch (e: java.net.SocketException) {
+                    // EBADF (Bad file descriptor) means socket is already closed
+                    // Exit the loop immediately
+                    Log.w(TAG, "Socket closed in SSDP receive loop, exiting: ${e.message}")
+                    break
                 } catch (e: Exception) {
                     Log.w(TAG, "Error in SSDP receive loop", e)
                 }
@@ -818,6 +828,11 @@ class DiscoveryManager(private val context: Context) {
                     // 正常超时，继续监听
                 } catch (e: CancellationException) {
                     throw e
+                } catch (e: java.net.SocketException) {
+                    // EBADF (Bad file descriptor) means socket is already closed
+                    // Exit the loop immediately
+                    Log.w(TAG, "Socket closed in SSDP notify receive loop, exiting: ${e.message}")
+                    break
                 } catch (e: Exception) {
                     Log.w(TAG, "Error in SSDP notify receive loop", e)
                 }
