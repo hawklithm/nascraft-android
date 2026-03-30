@@ -122,6 +122,9 @@ class MainActivity : ComponentActivity() {
     private fun onConnectToServer(server: DiscoveredServer) {
         Log.d("MainActivity", "Connect clicked. Server: ${server.name}")
 
+        // 保存连接的服务器到历史记录
+        discoveryManager.saveServerToHistory(server)
+
         // 保存连接的服务器并切换到详情页面
         connectedServer = server
         currentScreen = Screen.SERVER_DETAIL
@@ -366,33 +369,49 @@ fun DiscoveryScreen(
                         try {
                             discoveryManager.clearDiscoveredServers()
 
-                            // 双向发现模式：同时启动主动探测和被动监听
-
-                            // UDP双向发现：主动探测 + 被动监听服务端广播
-                            val udpSuccess = discoveryManager.startDiscovery()
-                            Log.d("MainActivity", "UDP双向发现 started (主动+被动): $udpSuccess")
-
-                            // mDNS双向发现：主动探测 + 被动监听服务端广播（由Android NSD自动处理）
-                            val mdnsSuccess = discoveryManager.startMDNSDiscovery()
-                            Log.d("MainActivity", "mDNS双向发现 started (主动+被动): $mdnsSuccess")
-
-                            // SSDP双向发现：主动M-SEARCH + 被动监听NOTIFY
-                            val ssdpSuccess = discoveryManager.startSSDPDiscovery()
-                            Log.d("MainActivity", "SSDP双向发现 started (M-SEARCH+NOTIFY): $ssdpSuccess")
-
-                            if (!udpSuccess) {
-                                Log.e("MainActivity", "UDP双向发现失败，尝试备用方式")
+                            // 优先测试历史记录中的服务器
+                            val hasHistoryServer = discoveryManager.testAndAddHistoryServers()
+                            if (hasHistoryServer) {
+                                Log.d("MainActivity", "Found working servers from history, skip full discovery")
                                 withContext(Dispatchers.Main) {
                                     Toast.makeText(
                                         context,
-                                        "UDP发现失败，尝试备用方式...",
+                                        "已从历史记录找到可用服务",
                                         Toast.LENGTH_SHORT
                                     ).show()
                                 }
                             }
 
-                            // 等待UDP主通道完成（5秒），mDNS继续运行作为长连接
-                            delay(DiscoveryManager.DISCOVERY_TIMEOUT_SECONDS * 1000L)
+                            // 如果历史记录没有找到可用服务器，进行完整发现
+                            if (discoveryManager.discoveredServers.value.isEmpty()) {
+                                // 双向发现模式：同时启动主动探测和被动监听
+
+                                // UDP双向发现：主动探测 + 被动监听服务端广播
+                                val udpSuccess = discoveryManager.startDiscovery()
+                                Log.d("MainActivity", "UDP双向发现 started (主动+被动): $udpSuccess")
+
+                                // mDNS双向发现：主动探测 + 被动监听服务端广播（由Android NSD自动处理）
+                                val mdnsSuccess = discoveryManager.startMDNSDiscovery()
+                                Log.d("MainActivity", "mDNS双向发现 started (主动+被动): $mdnsSuccess")
+
+                                // SSDP双向发现：主动M-SEARCH + 被动监听NOTIFY
+                                val ssdpSuccess = discoveryManager.startSSDPDiscovery()
+                                Log.d("MainActivity", "SSDP双向发现 started (M-SEARCH+NOTIFY): $ssdpSuccess")
+
+                                if (!udpSuccess) {
+                                    Log.e("MainActivity", "UDP双向发现失败，尝试备用方式")
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(
+                                            context,
+                                            "UDP发现失败，尝试备用方式...",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+
+                                // 等待UDP主通道完成（5秒），mDNS继续运行作为长连接
+                                delay(DiscoveryManager.DISCOVERY_TIMEOUT_SECONDS * 1000L)
+                            }
                         } finally {
                             // Always stop discovery so next run is reliable.
                             discoveryManager.stopDiscovery()

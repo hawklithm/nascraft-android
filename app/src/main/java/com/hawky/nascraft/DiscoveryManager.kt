@@ -60,21 +60,28 @@ class DiscoveryManager(private val context: Context) {
         const val DISCOVERY_TIMEOUT_SECONDS = 5L
         // mDNS超时时间（秒）- 设置为1分钟作为主通道
         const val MDNS_DISCOVERY_TIMEOUT_SECONDS = 60L
+        // 历史服务器连接超时（毫秒）
+        private const val HISTORY_SERVER_TIMEOUT_MS = 1500L
 
         private const val HELLO_PATH = "/api/hello"
         private const val HELLO_TIMEOUT_MS = 1500L
-        
+
         // 权限检查相关
         private const val INTERNET_PERMISSION = "android.permission.INTERNET"
         private const val ACCESS_NETWORK_STATE_PERMISSION = "android.permission.ACCESS_NETWORK_STATE"
         private const val ACCESS_WIFI_STATE_PERMISSION = "android.permission.ACCESS_WIFI_STATE"
         private const val CHANGE_WIFI_MULTICAST_STATE_PERMISSION = "android.permission.CHANGE_WIFI_MULTICAST_STATE"
-        
+
         // mDNS服务类型（Android NSD discoverServices() 通常使用不带 domain 的写法：_service._proto.）
         // 服务端会广播 _nascraft._tcp.local.，但 Android 侧 discover 参数更稳定的是 _nascraft._tcp.
         const val MDNS_SERVICE_TYPE = "_nascraft._tcp."
         // SSDP服务类型（与服务端保持一致）
         private const val NASCRAFT_SSDP_ST = "urn:nascraft:service:remote:1"
+
+        // SharedPreferences 存储相关
+        private const val PREF_NAME = "nascraft_history"
+        private const val KEY_HISTORY_SERVERS = "history_servers"
+        private const val MAX_HISTORY_SERVERS = 5
     }
 
     /**
@@ -1587,6 +1594,174 @@ class DiscoveryManager(private val context: Context) {
         } catch (e: Exception) {
             Log.w(TAG, "mDNS service not available: ${e.message}")
             false
+        }
+    }
+
+    /**
+     * 保存已连接服务器到历史记录
+     */
+    fun saveServerToHistory(server: DiscoveredServer) {
+        val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        val existing = getHistoryServers().toMutableList()
+
+        // 移除已存在的条目（避免重复）
+        existing.removeAll { item ->
+            item.ipAddress == server.ip.hostAddress && item.port == server.port
+        }
+
+        // 添加到最前面（最近连接的优先）
+        existing.add(0, SavedServerInfo.fromDiscovered(server))
+
+        // 限制最大数量
+        val trimmed = if (existing.size > MAX_HISTORY_SERVERS) {
+            existing.take(MAX_HISTORY_SERVERS).toMutableList()
+        } else {
+            existing
+        }
+
+        // 保存为JSON格式
+        val json = trimmed.joinToString(",") { it.toJson() }
+        prefs.edit().putString(KEY_HISTORY_SERVERS, json).apply()
+
+        Log.i(TAG, "Saved server to history: ${server.name} at ${server.ip.hostAddress}:${server.port}, total ${trimmed.size}")
+    }
+
+    /**
+     * 获取历史记录中的服务器列表
+     */
+    fun getHistoryServers(): List<SavedServerInfo> {
+        val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        val json = prefs.getString(KEY_HISTORY_SERVERS, null) ?: return emptyList()
+        if (json.isBlank()) return emptyList()
+
+        return try {
+            json.split(",").filter { it.isNotBlank() }.mapNotNull {
+                SavedServerInfo.fromJson(it)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse history servers", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * 测试历史记录中的所有服务器，返回第一个成功连通的服务器
+     * 如果全部失败返回null
+     */
+    suspend fun testHistoryServers(): DiscoveredServer? {
+        val history = getHistoryServers()
+        if (history.isEmpty()) {
+            Log.d(TAG, "No history servers to test")
+            return null
+        }
+
+        Log.i(TAG, "Testing ${history.size} history servers")
+
+        for (saved in history) {
+            try {
+                Log.d(TAG, "Testing history server: ${saved.name} at ${saved.ipAddress}:${saved.port}")
+                val result = testServerDirectly(saved.ipAddress)
+                if (result != null) {
+                    Log.i(TAG, "History server connected successfully: ${result.name} at ${saved.ipAddress}:${saved.port}")
+                    return result
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to test history server ${saved.ipAddress}", e)
+            }
+        }
+
+        Log.d(TAG, "All history servers failed, need full discovery")
+        return null
+    }
+
+    /**
+     * 批量测试历史服务器并添加到发现列表
+     * 返回是否有任何历史服务器连通成功
+     */
+    suspend fun testAndAddHistoryServers(): Boolean {
+        val history = getHistoryServers()
+        if (history.isEmpty()) return false
+
+        var anySuccess = false
+        val servers = mutableListOf<DiscoveredServer>()
+
+        for (saved in history) {
+            try {
+                val result = testServerDirectly(saved.ipAddress)
+                if (result != null) {
+                    validateAndAddServer(result, servers)
+                    anySuccess = true
+                    Log.i(TAG, "Added history server: ${result.name} at ${saved.ipAddress}")
+                    // 继续测试其他历史服务器，不中断
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to add history server ${saved.ipAddress}", e)
+            }
+        }
+
+        return anySuccess
+    }
+
+    /**
+     * 已保存服务器信息（用于持久化）
+     */
+    data class SavedServerInfo(
+        val name: String,
+        val ipAddress: String,
+        val port: Int,
+        val proto: String
+    ) {
+        fun toJson(): String {
+            return "{\"name\":\"$name\",\"ip\":\"$ipAddress\",\"port\":$port,\"proto\":\"$proto\"}"
+        }
+
+        companion object {
+            fun fromDiscovered(server: DiscoveredServer): SavedServerInfo {
+                return SavedServerInfo(
+                    name = server.name,
+                    ipAddress = server.ip.hostAddress ?: "",
+                    port = server.port,
+                    proto = server.proto
+                )
+            }
+
+            fun fromJson(json: String): SavedServerInfo? {
+                return try {
+                    // 简易解析，避免引入完整JSON库
+                    val name = extractValue(json, "name")
+                    val ip = extractValue(json, "ip")
+                    val portStr = extractValue(json, "port")
+                    val proto = extractValue(json, "proto") ?: "http"
+
+                    if (name == null || ip == null || portStr == null) {
+                        null
+                    } else {
+                        SavedServerInfo(
+                            name = name,
+                            ipAddress = ip,
+                            port = portStr.toInt(),
+                            proto = proto
+                        )
+                    }
+                } catch (e: Exception) {
+                    null
+                }
+            }
+
+            private fun extractValue(json: String, key: String): String? {
+                val pattern = "\"$key\"\\s*:\\s*\"([^\"]+)\""
+                val regex = Regex(pattern)
+                val match = regex.find(json)
+                if (match != null) {
+                    return match.groupValues[1]
+                }
+
+                // 尝试无引号的数字匹配
+                val numberPattern = "\"$key\"\\s*:\\s*(\\d+)"
+                val numberRegex = Regex(numberPattern)
+                val numberMatch = numberRegex.find(json)
+                return numberMatch?.groupValues?.get(1)
+            }
         }
     }
 }
