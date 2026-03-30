@@ -67,6 +67,10 @@ dependencies {
     // 添加 Material 图标库 - 通过版本目录引用
     implementation(libs.androidx.compose.material.icons.extended)
 
+    // Accompanist Pager for swipeable image preview
+    implementation(libs.accompanist.pager)
+    implementation(libs.accompanist.pager.indicators)
+
     // Coroutines - 通过版本目录引用
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)

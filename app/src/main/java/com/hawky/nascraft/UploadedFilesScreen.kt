@@ -20,12 +20,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Description
 import coil.compose.AsyncImage
+import com.google.accompanist.pager.ExperimentalPagerApi
+import com.google.accompanist.pager.HorizontalPager
+import com.google.accompanist.pager.rememberPagerState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -36,10 +38,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,14 +61,13 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
 /**
- * 已上传文件列表页面
+ * 已上传文件列表页面 - 作为 Tab 内容使用，不包含独立 header
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalPagerApi::class)
 @Composable
 fun UploadedFilesScreen(
     fileUploadManager: FileUploadManager,
-    server: DiscoveredServer,
-    onBackClick: () -> Unit
+    server: DiscoveredServer
 ) {
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -81,6 +79,13 @@ fun UploadedFilesScreen(
     var currentPage by remember { mutableIntStateOf(1) }
     var hasMore by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    // Image preview state - for swipeable gallery
+    var showImagePreview by remember { mutableStateOf(false) }
+    var initialPreviewIndex by remember { mutableIntStateOf(0) }
+    val previewableFiles = remember(uploadedFiles) {
+        uploadedFiles.filter { !it.thumbnailUrl.isNullOrEmpty() }
+    }
 
     // 加载数据
     suspend fun loadFiles(refresh: Boolean = false) {
@@ -133,67 +138,27 @@ fun UploadedFilesScreen(
         loadFiles(refresh = true)
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = server.name,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "已上传文件",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBackClick) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                actions = {
-                    IconButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                loadFiles(refresh = true)
-                            }
-                        },
-                        enabled = !isLoading
-                    ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "刷新")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-            )
-        }
-    ) { paddingValues ->
-        Column(
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+    ) {
+        // 统计信息
+        Card(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
+                .fillMaxWidth()
+                .padding(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer
+            )
         ) {
-            // 统计信息
-            Card(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer
-                )
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
+                Row {
                     Column {
                         Text(
                             text = "总文件数",
@@ -207,6 +172,7 @@ fun UploadedFilesScreen(
                             color = MaterialTheme.colorScheme.onSecondaryContainer
                         )
                     }
+                    Spacer(modifier = Modifier.width(32.dp))
                     Column {
                         Text(
                             text = "当前显示",
@@ -221,95 +187,174 @@ fun UploadedFilesScreen(
                         )
                     }
                 }
-            }
-
-            // 文件列表
-            if (errorMessage != null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center
+                IconButton(
+                    onClick = {
+                        coroutineScope.launch {
+                            loadFiles(refresh = true)
+                        }
+                    },
+                    enabled = !isLoading
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        Text(
-                            text = errorMessage ?: "",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        Button(onClick = {
-                            coroutineScope.launch {
-                                loadFiles(refresh = true)
+                    Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                }
+            }
+        }
+
+        // 文件列表
+        if (errorMessage != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        text = errorMessage ?: "",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    Button(onClick = {
+                        coroutineScope.launch {
+                            loadFiles(refresh = true)
+                        }
+                    }) {
+                        Text("重试")
+                    }
+                }
+            }
+        } else if (uploadedFiles.isEmpty() && !isLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        modifier = Modifier.size(64.dp),
+                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "暂无已上传文件",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = 16.dp,
+                    vertical = 16.dp
+                )
+            ) {
+                items(uploadedFiles, key = { it.fileId }) { file ->
+                    FileCard(
+                        file = file,
+                        fileUploadManager = fileUploadManager,
+                        baseUrl = baseUrl,
+                        onPreviewClick = {
+                            // Find index in previewable list and open preview
+                            val index = previewableFiles.indexOfFirst { it.fileId == file.fileId }
+                            if (index >= 0) {
+                                initialPreviewIndex = index
+                                showImagePreview = true
                             }
-                        }) {
-                            Text("重试")
+                        }
+                    )
+                }
+
+                // 加载更多指示器
+                if (isLoading && uploadedFiles.isNotEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Text("加载更多...")
+                            }
                         }
                     }
                 }
-            } else if (uploadedFiles.isEmpty() && !isLoading) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            modifier = Modifier.size(64.dp),
-                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = "暂无已上传文件",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        horizontal = 16.dp,
-                        vertical = 16.dp
-                    )
-                ) {
-                    items(uploadedFiles, key = { it.fileId }) { file ->
-                        FileCard(file, fileUploadManager, baseUrl)
-                    }
+            }
+        }
 
-                    // 加载更多指示器
-                    if (isLoading && uploadedFiles.isNotEmpty()) {
-                        item {
-                            Box(
+        // Swipeable image preview bottom sheet
+        if (showImagePreview && previewableFiles.isNotEmpty()) {
+            ModalBottomSheet(
+                onDismissRequest = { showImagePreview = false },
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 600.dp)
+                        .background(MaterialTheme.colorScheme.surface),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    val pagerState = rememberPagerState(initialPage = initialPreviewIndex)
+
+                    HorizontalPager(
+                        state = pagerState,
+                        count = previewableFiles.size,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(550.dp)
+                            .padding(vertical = 16.dp)
+                    ) { page ->
+                        val file = previewableFiles[page]
+                        val fullImageUrl = "$baseUrl/api/download/${file.fileId}"
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            AsyncImage(
+                                model = fullImageUrl,
+                                contentDescription = file.filename,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(16.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(20.dp),
-                                        strokeWidth = 2.dp
-                                    )
-                                    Text("加载更多...")
-                                }
-                            }
+                                    .align(Alignment.Center),
+                                alignment = Alignment.Center
+                            )
                         }
+                    }
+
+                    // Page indicator at bottom
+                    if (previewableFiles.size > 1) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        com.google.accompanist.pager.HorizontalPagerIndicator(
+                            pagerState = pagerState,
+                            pageCount = previewableFiles.size,
+                            modifier = Modifier
+                                .padding(bottom = 16.dp),
+                            activeColor = MaterialTheme.colorScheme.primary,
+                            inactiveColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
                     }
                 }
             }
@@ -325,9 +370,9 @@ fun UploadedFilesScreen(
 fun FileCard(
     file: UploadedFile,
     fileUploadManager: FileUploadManager,
-    baseUrl: String
+    baseUrl: String,
+    onPreviewClick: () -> Unit
 ) {
-    var showPreview by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -348,7 +393,7 @@ fun FileCard(
                     )
                     .then(
                         if (file.thumbnailUrl != null) {
-                            Modifier.clickable { showPreview = true }
+                            Modifier.clickable { onPreviewClick() }
                         } else {
                             Modifier
                         }
@@ -372,8 +417,8 @@ fun FileCard(
                     // Show generic icon when no thumbnail
                     val isImage = file.filename.lowercase().let {
                         it.endsWith(".jpg") || it.endsWith(".jpeg") ||
-                        it.endsWith(".png") || it.endsWith(".gif") ||
-                        it.endsWith(".webp") || it.endsWith(".bmp")
+                                it.endsWith(".png") || it.endsWith(".gif") ||
+                                it.endsWith(".webp") || it.endsWith(".bmp")
                     }
                     if (isImage) {
                         Icon(
@@ -453,33 +498,8 @@ fun FileCard(
 
                     Text(
                         text = "文件ID: ${file.fileId.take(8)}...",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        // Full-size image preview bottom sheet
-        if (showPreview && !file.thumbnailUrl.isNullOrEmpty()) {
-            ModalBottomSheet(
-                onDismissRequest = { showPreview = false },
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 600.dp)
-                        .background(MaterialTheme.colorScheme.surface),
-                    contentAlignment = Alignment.Center
-                ) {
-                    val fullImageUrl = "$baseUrl/api/download/${file.fileId}"
-                    AsyncImage(
-                        model = fullImageUrl,
-                        contentDescription = file.filename,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        alignment = Alignment.Center
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }

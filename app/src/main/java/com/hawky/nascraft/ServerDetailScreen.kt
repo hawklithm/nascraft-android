@@ -146,8 +146,7 @@ fun ServerDetailScreen(
                     PageNav.FILES -> {
                         UploadedFilesScreen(
                             fileUploadManager = fileUploadManager,
-                            server = server,
-                            onBackClick = { /* 已在顶部导航栏处理返回 */ }
+                            server = server
                         )
                     }
                 }
