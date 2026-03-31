@@ -29,6 +29,7 @@ import com.google.accompanist.pager.ExperimentalPagerApi
 import com.google.accompanist.pager.HorizontalPager
 import com.google.accompanist.pager.rememberPagerState
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -55,9 +56,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import android.widget.Toast
 import kotlinx.coroutines.launch
 
 /**
@@ -67,9 +70,11 @@ import kotlinx.coroutines.launch
 @Composable
 fun UploadedFilesScreen(
     fileUploadManager: FileUploadManager,
+    dlnaManager: DlnaManager,
     server: DiscoveredServer
 ) {
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
     val listState = rememberLazyListState()
     val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
 
@@ -86,6 +91,12 @@ fun UploadedFilesScreen(
     val previewableFiles = remember(uploadedFiles) {
         uploadedFiles.filter { !it.thumbnailUrl.isNullOrEmpty() }
     }
+
+    // DLNA cast state
+    var showCastDeviceSelection by remember { mutableStateOf(false) }
+    var selectedFileForCast by remember { mutableStateOf<UploadedFile?>(null) }
+    var castDevices by remember { mutableStateOf<List<Pair<DlnaRenderer, PlaybackInfo>>>(emptyList()) }
+    var castLoading by remember { mutableStateOf(false) }
 
     // 加载数据
     suspend fun loadFiles(refresh: Boolean = false) {
@@ -274,6 +285,20 @@ fun UploadedFilesScreen(
                                 initialPreviewIndex = index
                                 showImagePreview = true
                             }
+                        },
+                        onCastClick = { selectedFile ->
+                            coroutineScope.launch {
+                                castLoading = true
+                                val devices = dlnaManager.listRenderers(baseUrl)
+                                if (devices != null) {
+                                    castDevices = devices
+                                    selectedFileForCast = selectedFile
+                                    showCastDeviceSelection = true
+                                } else {
+                                    Toast.makeText(context, "获取设备列表失败", Toast.LENGTH_SHORT).show()
+                                }
+                                castLoading = false
+                            }
                         }
                     )
                 }
@@ -358,7 +383,117 @@ fun UploadedFilesScreen(
                     }
                 }
             }
+
+            // DLNA 设备选择底部弹窗
+            if (showCastDeviceSelection && selectedFileForCast != null) {
+                ModalBottomSheet(
+                    onDismissRequest = { showCastDeviceSelection = false },
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                            .heightIn(max = 500.dp)
+                    ) {
+                        Text(
+                            text = "选择投屏设备 - ${selectedFileForCast!!.filename}",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+
+                        if (castLoading) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(32.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator()
+                            }
+                        } else if (castDevices.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(32.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "未发现DLNA设备\n请确认电视已开启且在同一局域网",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        } else {
+                            LazyColumn(
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(castDevices) { (renderer, playback) ->
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                coroutineScope.launch {
+                                                    val success = dlnaManager.playOnRenderer(
+                                                        baseUrl,
+                                                        renderer.uuid,
+                                                        selectedFileForCast!!.fileId
+                                                    )
+                                                    if (success) {
+                                                        Toast.makeText(
+                                                            context,
+                                                            "投屏成功！已在 \"${renderer.name}\" 开始播放",
+                                                            Toast.LENGTH_LONG
+                                                        ).show()
+                                                        showCastDeviceSelection = false
+                                                    } else {
+                                                        Toast.makeText(
+                                                            context,
+                                                            "投屏失败，请重试",
+                                                            Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    }
+                                                }
+                                            },
+                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(16.dp)
+                                        ) {
+                                            Text(
+                                                text = renderer.name,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = "${renderer.ipAddr}:${renderer.port} - ${formatState(playback.state)}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+/**
+ * 格式化播放状态
+ */
+fun formatState(state: PlaybackState): String {
+    return when (state) {
+        PlaybackState.Unknown -> "未知"
+        PlaybackState.Stopped -> "已停止"
+        PlaybackState.Playing -> "播放中"
+        PlaybackState.Paused -> "已暂停"
+        PlaybackState.Transiting -> "加载中"
     }
 }
 
@@ -371,136 +506,152 @@ fun FileCard(
     file: UploadedFile,
     fileUploadManager: FileUploadManager,
     baseUrl: String,
-    onPreviewClick: () -> Unit
+    onPreviewClick: () -> Unit,
+    onCastClick: (UploadedFile) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(12.dp)
         ) {
-            // Thumbnail preview
-            Box(
+            // 第一行：缩略图 + 文件信息
+            Row(
                 modifier = Modifier
-                    .size(64.dp)
-                    .background(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(4.dp)
-                    )
-                    .then(
-                        if (file.thumbnailUrl != null) {
-                            Modifier.clickable { onPreviewClick() }
-                        } else {
-                            Modifier
-                        }
-                    ),
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                val thumbnailFullUrl = if (file.thumbnailUrl != null) {
-                    "$baseUrl${file.thumbnailUrl}"
-                } else {
-                    null
-                }
-
-                if (!thumbnailFullUrl.isNullOrEmpty()) {
-                    AsyncImage(
-                        model = thumbnailFullUrl,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        alignment = Alignment.Center
-                    )
-                } else {
-                    // Show generic icon when no thumbnail
-                    val isImage = file.filename.lowercase().let {
-                        it.endsWith(".jpg") || it.endsWith(".jpeg") ||
-                                it.endsWith(".png") || it.endsWith(".gif") ||
-                                it.endsWith(".webp") || it.endsWith(".bmp")
+                // Thumbnail preview
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(4.dp)
+                        )
+                        .then(
+                            if (file.thumbnailUrl != null) {
+                                Modifier.clickable { onPreviewClick() }
+                            } else {
+                                Modifier
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val thumbnailFullUrl = if (file.thumbnailUrl != null) {
+                        "$baseUrl${file.thumbnailUrl}"
+                    } else {
+                        null
                     }
-                    if (isImage) {
-                        Icon(
-                            Icons.Default.Image,
+
+                    if (!thumbnailFullUrl.isNullOrEmpty()) {
+                        AsyncImage(
+                            model = thumbnailFullUrl,
                             contentDescription = null,
-                            modifier = Modifier.size(24.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            modifier = Modifier.fillMaxSize(),
+                            alignment = Alignment.Center
                         )
                     } else {
-                        Icon(
-                            Icons.Default.Description,
-                            contentDescription = null,
-                            modifier = Modifier.size(24.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        // Show generic icon when no thumbnail
+                        val isImage = file.filename.lowercase().let {
+                            it.endsWith(".jpg") || it.endsWith(".jpeg") ||
+                                    it.endsWith(".png") || it.endsWith(".gif") ||
+                                    it.endsWith(".webp") || it.endsWith(".bmp")
+                        }
+                        if (isImage) {
+                            Icon(
+                                Icons.Default.Image,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.Description,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.width(16.dp))
+                Spacer(modifier = Modifier.width(12.dp))
 
-            Column(
-                modifier = Modifier.weight(1f)
-            ) {
-                // 文件名和状态
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Column(
-                        modifier = Modifier.weight(1f)
+                    // 文件名和状态
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = file.filename,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = fileUploadManager.formatFileSize(file.totalSize),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        // 状态标签
+                        StatusChip(
+                            status = file.status,
+                            statusText = fileUploadManager.getStatusText(file.status)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // 文件信息
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = file.filename,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = fileUploadManager.formatFileSize(file.totalSize),
+                            text = "MD5: ${file.checksum.take(8)}...",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                    }
 
-                    // 状态标签
-                    StatusChip(
-                        status = file.status,
-                        statusText = fileUploadManager.getStatusText(file.status)
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // 文件信息
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "MD5: ${file.checksum.take(16)}...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = fileUploadManager.formatTimestamp(file.lastUpdated),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                }
+            }
 
-                    Text(
-                        text = "文件ID: ${file.fileId.take(8)}...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            // 第二行：投屏按钮
+            if (file.status == 2) { // 只在上传完成后显示投屏按钮
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = { onCastClick(file) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    ),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                ) {
+                    Text("投屏到电视", style = MaterialTheme.typography.labelMedium)
                 }
             }
         }

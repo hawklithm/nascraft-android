@@ -47,7 +47,8 @@ import androidx.compose.ui.unit.dp
  */
 enum class PageNav {
     UPLOAD,
-    FILES
+    FILES,
+    DLNA
 }
 
 /**
@@ -67,6 +68,9 @@ fun ServerDetailScreen(
 ) {
     var currentPage by rememberSaveable { mutableStateOf(PageNav.UPLOAD) }
     var selectedTab by remember { mutableIntStateOf(0) }
+
+    // 创建 DLNA 管理器实例
+    val dlnaManager = remember { DlnaManager() }
 
     // 上传完成时切换到文件列表
     LaunchedEffect(uploadState?.status) {
@@ -129,6 +133,14 @@ fun ServerDetailScreen(
                     },
                     text = { Text("已上传文件") }
                 )
+                Tab(
+                    selected = selectedTab == 2,
+                    onClick = {
+                        selectedTab = 2
+                        currentPage = PageNav.DLNA
+                    },
+                    text = { Text("DLNA投屏") }
+                )
             }
 
             // 内容区域
@@ -146,6 +158,13 @@ fun ServerDetailScreen(
                     PageNav.FILES -> {
                         UploadedFilesScreen(
                             fileUploadManager = fileUploadManager,
+                            dlnaManager = dlnaManager,
+                            server = server
+                        )
+                    }
+                    PageNav.DLNA -> {
+                        DlnaScreen(
+                            dlnaManager = dlnaManager,
                             server = server
                         )
                     }
