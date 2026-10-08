@@ -383,96 +383,96 @@ fun UploadedFilesScreen(
                     }
                 }
             }
+        }
 
-            // DLNA 设备选择底部弹窗
-            if (showCastDeviceSelection && selectedFileForCast != null) {
-                ModalBottomSheet(
-                    onDismissRequest = { showCastDeviceSelection = false },
+        // DLNA 设备选择底部弹窗
+        if (showCastDeviceSelection && selectedFileForCast != null) {
+            ModalBottomSheet(
+                onDismissRequest = { showCastDeviceSelection = false },
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                        .heightIn(max = 500.dp)
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp)
-                            .heightIn(max = 500.dp)
-                    ) {
-                        Text(
-                            text = "选择投屏设备 - ${selectedFileForCast!!.filename}",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(bottom = 16.dp)
-                        )
+                    Text(
+                        text = "选择投屏设备 - ${selectedFileForCast!!.filename}",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
 
-                        if (castLoading) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(32.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                CircularProgressIndicator()
-                            }
-                        } else if (castDevices.isEmpty()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(32.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "未发现DLNA设备\n请确认电视已开启且在同一局域网",
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                )
-                            }
-                        } else {
-                            LazyColumn(
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                items(castDevices) { (renderer, playback) ->
-                                    Card(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                coroutineScope.launch {
-                                                    val success = dlnaManager.playOnRenderer(
-                                                        baseUrl,
-                                                        renderer.uuid,
-                                                        selectedFileForCast!!.fileId
-                                                    )
-                                                    if (success) {
-                                                        Toast.makeText(
-                                                            context,
-                                                            "投屏成功！已在 \"${renderer.name}\" 开始播放",
-                                                            Toast.LENGTH_LONG
-                                                        ).show()
-                                                        showCastDeviceSelection = false
-                                                    } else {
-                                                        Toast.makeText(
-                                                            context,
-                                                            "投屏失败，请重试",
-                                                            Toast.LENGTH_SHORT
-                                                        ).show()
-                                                    }
+                    if (castLoading) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(32.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    } else if (castDevices.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(32.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "未发现DLNA设备\n请确认电视已开启且在同一局域网",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(castDevices) { (renderer, playback) ->
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            coroutineScope.launch {
+                                                val success = dlnaManager.playOnRenderer(
+                                                    baseUrl,
+                                                    renderer.uuid,
+                                                    selectedFileForCast!!.fileId
+                                                )
+                                                if (success) {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "投屏成功！已在 \"${renderer.name}\" 开始播放",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                    showCastDeviceSelection = false
+                                                } else {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "投屏失败，请重试",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
                                                 }
-                                            },
-                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                            }
+                                        },
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(16.dp)
                                     ) {
-                                        Column(
-                                            modifier = Modifier.padding(16.dp)
-                                        ) {
-                                            Text(
-                                                text = renderer.name,
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                            Spacer(modifier = Modifier.height(4.dp))
-                                            Text(
-                                                text = "${renderer.ipAddr}:${renderer.port} - ${formatState(playback.state)}",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
+                                        Text(
+                                            text = renderer.name,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "${renderer.ipAddr}:${renderer.port} - ${formatState(playback.state)}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                 }
                             }
