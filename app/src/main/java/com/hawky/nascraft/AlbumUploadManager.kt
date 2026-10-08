@@ -84,6 +84,18 @@ class AlbumUploadManager(private val context: Context) {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    /** MD5 本地缓存：key = photo.id + dateModified；照片未变则复用，避免重复全量哈希 */
+    private val md5Cache by lazy {
+        context.getSharedPreferences("nascraft_md5_cache", Context.MODE_PRIVATE)
+    }
+
+    private fun getCachedMd5(id: Long, dateModified: Long): String? =
+        md5Cache.getString("md5_${id}_$dateModified", null)
+
+    private fun putCachedMd5(id: Long, dateModified: Long, md5: String) {
+        md5Cache.edit().putString("md5_${id}_$dateModified", md5).apply()
+    }
+
     private var isUploading = false
     private var shouldStop = false
     @Volatile
@@ -375,8 +387,18 @@ class AlbumUploadManager(private val context: Context) {
                 result["chunks"] = chunks
                 result["chunk_size"] = data.getLong("chunk_size")
                 result["skipped"] = false
-                
-                Log.i(TAG, "Metadata parsed: url=$url, fileId=$fileId, totalChunks=$totalChunks, skipped=false")
+
+                // 断点续传：服务端可能复用同 checksum 的未完成记录，并返回已完成的分片偏移
+                val uploadedOffsets = mutableListOf<Long>()
+                val uploadedArray = data.optJSONArray("uploaded_chunks")
+                if (uploadedArray != null) {
+                    for (i in 0 until uploadedArray.length()) {
+                        uploadedOffsets.add(uploadedArray.getLong(i))
+                    }
+                }
+                result["uploaded_offsets"] = uploadedOffsets
+
+                Log.i(TAG, "Metadata parsed: url=$url, fileId=$fileId, totalChunks=$totalChunks, skipped=false, resumableChunks=${uploadedOffsets.size}")
                 return@withContext result
             }
         } catch (e: Exception) {
@@ -498,8 +520,12 @@ class AlbumUploadManager(private val context: Context) {
                 return@withContext false
             }
 
-            // 2. 计算MD5
-            val md5Hash = calculateMD5(fileData)
+            // 2. 计算MD5（带本地缓存：照片未变则跳过全量哈希）
+            val md5Hash = getCachedMd5(photoInfo.id, photoInfo.dateModified) ?: run {
+                val computed = calculateMD5(fileData)
+                putCachedMd5(photoInfo.id, photoInfo.dateModified, computed)
+                computed
+            }
             Log.d(TAG, "File MD5: baseUrl=$baseUrl, filename=${photoInfo.name}, md5=$md5Hash")
 
             // 3. 提交元数据（包含去重检查）
@@ -549,8 +575,22 @@ class AlbumUploadManager(private val context: Context) {
                 return@withContext false
             }
 
+            // 断点续传：跳过服务端已确认上传完成的分片（中断后重连可续传）
+            @Suppress("UNCHECKED_CAST")
+            val uploadedOffsets = (metadata["uploaded_offsets"] as? List<*>)
+                ?.mapNotNull { (it as? Number)?.toLong() }
+                ?.toSet() ?: emptySet()
+            val skippedChunks = if (uploadedOffsets.isNotEmpty()) chunkRanges.count { it.startOffset in uploadedOffsets } else 0
+            // 至少保留最后一个分片走一遍上传：最后一片会触发服务端的合并/校验流程
+            val pendingChunks = chunkRanges.filter { it.startOffset !in uploadedOffsets || it == chunkRanges.last() }
+            var doneCount = skippedChunks
+            if (skippedChunks > 0) {
+                Log.i(TAG, "Resuming ${photoInfo.name}: skipping $skippedChunks/$totalChunks already-uploaded chunks")
+            }
+
             // 4. 上传分片
-            for ((chunkIndex, chunkRange) in chunkRanges.withIndex()) {
+            for (chunkRange in pendingChunks) {
+                val chunkIndex = chunkRanges.indexOf(chunkRange)
                 if (shouldStop) {
                     Log.i(TAG, "Upload stopped by user: ${photoInfo.name}")
                     progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("Upload stopped"), totalFiles, currentFileIndex)
@@ -582,7 +622,8 @@ class AlbumUploadManager(private val context: Context) {
                 }
 
                 // 更新进度
-                val progress = (chunkIndex + 1).toFloat() / totalChunks
+                doneCount++
+                val progress = doneCount.toFloat() / totalChunks
                 progressCallback?.invoke(photoInfo, progress, UploadStatus.Uploading, totalFiles, currentFileIndex)
             }
 
