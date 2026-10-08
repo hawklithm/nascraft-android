@@ -83,47 +83,14 @@ class DlnaManager {
             val devices = mutableListOf<Pair<DlnaRenderer, PlaybackInfo>>()
 
             for (i in 0 until devicesJsonArray.length()) {
-                val devicePair = devicesJsonArray.getJSONArray(i)
-                val rendererJson = devicePair.getJSONObject(0)
-                val playbackJson = devicePair.getJSONObject(1)
-
-                val renderer = DlnaRenderer(
-                    uuid = rendererJson.getString("uuid"),
-                    name = rendererJson.getString("name"),
-                    manufacturer = if (rendererJson.isNull("manufacturer")) null else rendererJson.optString("manufacturer"),
-                    modelName = if (rendererJson.isNull("model_name")) null else rendererJson.optString("model_name"),
-                    location = rendererJson.getString("location"),
-                    ipAddr = rendererJson.getString("ip_addr"),
-                    port = rendererJson.getInt("port"),
-                    avTransportService = if (rendererJson.isNull("av_transport_service")) null else {
-                        val s = rendererJson.getJSONObject("av_transport_service")
-                        ServiceInfo(
-                            serviceId = s.getString("service_id"),
-                            controlUrl = s.getString("control_url"),
-                            eventSubUrl = s.getString("event_sub_url")
-                        )
-                    },
-                    renderingControlService = if (rendererJson.isNull("rendering_control_service")) null else {
-                        val s = rendererJson.getJSONObject("rendering_control_service")
-                        ServiceInfo(
-                            serviceId = s.getString("service_id"),
-                            controlUrl = s.getString("control_url"),
-                            eventSubUrl = s.getString("event_sub_url")
-                        )
-                    }
-                )
-
-                val playback = PlaybackInfo(
-                    state = PlaybackState.valueOf(playbackJson.getString("state")),
-                    currentUri = if (playbackJson.isNull("current_uri")) null else playbackJson.optString("current_uri"),
-                    currentMetadata = if (playbackJson.isNull("current_metadata")) null else playbackJson.optString("current_metadata"),
-                    volume = playbackJson.getInt("volume"),
-                    muted = playbackJson.getBoolean("muted"),
-                    duration = if (playbackJson.isNull("duration")) null else playbackJson.optString("duration"),
-                    position = if (playbackJson.isNull("position")) null else playbackJson.optString("position")
-                )
-
-                devices.add(Pair(renderer, playback))
+                // 单个设备解析失败只跳过该设备，不影响整体列表
+                val parsed = try {
+                    parseDeviceEntry(devicesJsonArray.getJSONArray(i))
+                } catch (e: Exception) {
+                    Log.e(TAG, "Skip malformed device entry #$i", e)
+                    null
+                } ?: continue
+                devices.add(parsed)
             }
 
             devices
@@ -131,6 +98,36 @@ class DlnaManager {
             Log.e(TAG, "Error parsing device list response", e)
             null
         }
+    }
+
+    /**
+     * 解析单个设备条目 [renderer, playback]
+     */
+    private fun parseDeviceEntry(entry: org.json.JSONArray): Pair<DlnaRenderer, PlaybackInfo> {
+        val rendererJson = entry.getJSONObject(0)
+        val playbackJson = entry.getJSONObject(1)
+
+        val renderer = DlnaRenderer(
+            uuid = rendererJson.getString("uuid"),
+            name = rendererJson.getString("name"),
+            manufacturer = if (rendererJson.isNull("manufacturer")) null else rendererJson.optString("manufacturer"),
+            modelName = if (rendererJson.isNull("model_name")) null else rendererJson.optString("model_name"),
+            location = rendererJson.getString("location"),
+            ipAddr = rendererJson.getString("ip_addr"),
+            port = rendererJson.getInt("port")
+        )
+
+        val playback = PlaybackInfo(
+            state = PlaybackState.fromString(playbackJson.optString("state", "Unknown")),
+            currentUri = if (playbackJson.isNull("current_uri")) null else playbackJson.optString("current_uri"),
+            currentMetadata = if (playbackJson.isNull("current_metadata")) null else playbackJson.optString("current_metadata"),
+            volume = playbackJson.optInt("volume", 0),
+            muted = playbackJson.optBoolean("muted", false),
+            duration = if (playbackJson.isNull("duration")) null else playbackJson.optString("duration"),
+            position = if (playbackJson.isNull("position")) null else playbackJson.optString("position")
+        )
+
+        return Pair(renderer, playback)
     }
 
     /**
