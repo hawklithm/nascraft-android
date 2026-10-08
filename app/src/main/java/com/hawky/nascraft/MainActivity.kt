@@ -67,6 +67,8 @@ class MainActivity : ComponentActivity() {
     private var uploadStates = mutableStateMapOf<String, UploadState>()
     // 总体汇总事件（开始/全部完成），fileName 为空的哨兵状态
     private var overallUploadState by mutableStateOf<UploadState?>(null)
+    // 相册上传是否处于暂停状态（驱动暂停/继续按钮 UI）
+    private var isUploadPaused by mutableStateOf(false)
     private var currentScreen by mutableStateOf<Screen>(Screen.DISCOVERY)
     private var connectedServer by mutableStateOf<DiscoveredServer?>(null)
 
@@ -94,6 +96,7 @@ class MainActivity : ComponentActivity() {
                     connectedServer = connectedServer,
                     uploadStates = uploadStates,
                     overallUploadState = overallUploadState,
+                    isUploadPaused = isUploadPaused,
                     discoveryManager = discoveryManager,
                     albumUploadManager = albumUploadManager,
                     fileUploadManager = fileUploadManager,
@@ -107,6 +110,16 @@ class MainActivity : ComponentActivity() {
                         albumUploadManager.stopAlbumUpload()
                         uploadStates.clear()
                         overallUploadState = null
+                        isUploadPaused = false
+                    },
+                    onTogglePause = {
+                        if (albumUploadManager.isPaused()) {
+                            albumUploadManager.resumeAlbumUpload()
+                            isUploadPaused = false
+                        } else {
+                            albumUploadManager.pauseAlbumUpload()
+                            isUploadPaused = true
+                        }
                     },
                     onBackToDiscovery = {
                         currentScreen = Screen.DISCOVERY
@@ -201,6 +214,7 @@ class MainActivity : ComponentActivity() {
 
         // 清空上一次的进度条（每个进行中的文件会各自出现一条）
         uploadStates.clear()
+        isUploadPaused = false
 
         // 启动上传
         albumUploadManager.startAlbumUpload(baseUrl) { photoInfo, progress, status, totalFiles, currentFileIndex ->
@@ -252,12 +266,14 @@ fun MainScreen(
     connectedServer: DiscoveredServer?,
     uploadStates: Map<String, UploadState>,
     overallUploadState: UploadState? = null,
+    isUploadPaused: Boolean = false,
     discoveryManager: DiscoveryManager,
     albumUploadManager: AlbumUploadManager,
     fileUploadManager: FileUploadManager,
     onConnectToServer: (DiscoveredServer) -> Unit,
     onStartUpload: (DiscoveredServer) -> Unit,
     onStopUpload: () -> Unit,
+    onTogglePause: () -> Unit,
     onBackToDiscovery: () -> Unit
 ) {
     when (currentScreen) {
@@ -275,9 +291,11 @@ fun MainScreen(
                     albumUploadManager = albumUploadManager,
                     fileUploadManager = fileUploadManager,
                     uploadStates = uploadStates,
+                    isUploadPaused = isUploadPaused,
                     onBackClick = onBackToDiscovery,
                     onStartUpload = onStartUpload,
-                    onStopUpload = onStopUpload
+                    onStopUpload = onStopUpload,
+                    onTogglePause = onTogglePause
                 )
             }
         }

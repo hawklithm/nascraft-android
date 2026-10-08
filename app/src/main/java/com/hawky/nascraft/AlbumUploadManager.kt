@@ -86,6 +86,8 @@ class AlbumUploadManager(private val context: Context) {
 
     private var isUploading = false
     private var shouldStop = false
+    @Volatile
+    private var isPaused = false
     private var uploadJob: Job? = null
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
 
@@ -555,6 +557,8 @@ class AlbumUploadManager(private val context: Context) {
                     return@withContext false
                 }
 
+                waitWhilePaused()
+
                 while (true) {
                     if (shouldStop) {
                         Log.i(TAG, "Upload stopped by user during retry: ${photoInfo.name}")
@@ -626,6 +630,7 @@ class AlbumUploadManager(private val context: Context) {
 
         isUploading = true
         shouldStop = false
+        isPaused = false
 
         uploadJob = coroutineScope.launch {
             try {
@@ -647,6 +652,7 @@ class AlbumUploadManager(private val context: Context) {
                 // 单个 worker：循环从队列领取下一个待上传文件，直到队列耗尽或用户停止
                 val worker: suspend () -> Unit = worker@{
                     while (!shouldStop) {
+                        waitWhilePaused()
                         val index = nextIndex.getAndIncrement()
                         if (index >= photos.size) return@worker
 
@@ -714,6 +720,36 @@ class AlbumUploadManager(private val context: Context) {
         isUploading = false
         uploadJob?.cancel()
         Log.i(TAG, "Album upload stopped")
+    }
+
+    /**
+     * 暂停相册上传（不取消任务，worker 在分片边界挂起）
+     */
+    fun pauseAlbumUpload() {
+        isPaused = true
+        Log.i(TAG, "Album upload paused")
+    }
+
+    /**
+     * 恢复相册上传
+     */
+    fun resumeAlbumUpload() {
+        isPaused = false
+        Log.i(TAG, "Album upload resumed")
+    }
+
+    /**
+     * 检查是否已暂停
+     */
+    fun isPaused(): Boolean = isPaused
+
+    /**
+     * 暂停期间挂起当前协程，直到恢复或停止
+     */
+    private suspend fun waitWhilePaused() {
+        while (isPaused && !shouldStop) {
+            kotlinx.coroutines.delay(100L)
+        }
     }
 
     /**

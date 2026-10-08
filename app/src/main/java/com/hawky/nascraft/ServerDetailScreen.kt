@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.Button
@@ -62,9 +64,11 @@ fun ServerDetailScreen(
     albumUploadManager: AlbumUploadManager,
     fileUploadManager: FileUploadManager,
     uploadStates: Map<String, UploadState>,
+    isUploadPaused: Boolean = false,
     onBackClick: () -> Unit,
     onStartUpload: (DiscoveredServer) -> Unit,
-    onStopUpload: () -> Unit
+    onStopUpload: () -> Unit,
+    onTogglePause: () -> Unit
 ) {
     var currentPage by rememberSaveable { mutableStateOf(PageNav.UPLOAD) }
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -142,8 +146,10 @@ fun ServerDetailScreen(
                             albumUploadManager = albumUploadManager,
                             uploadStates = uploadStates,
                             server = server,
+                            isUploadPaused = isUploadPaused,
                             onStartUpload = onStartUpload,
-                            onStopUpload = onStopUpload
+                            onStopUpload = onStopUpload,
+                            onTogglePause = onTogglePause
                         )
                     }
                     PageNav.FILES -> {
@@ -173,14 +179,17 @@ fun UploadContent(
     albumUploadManager: AlbumUploadManager,
     uploadStates: Map<String, UploadState>,
     server: DiscoveredServer,
+    isUploadPaused: Boolean = false,
     onStartUpload: (DiscoveredServer) -> Unit,
-    onStopUpload: () -> Unit
+    onStopUpload: () -> Unit,
+    onTogglePause: () -> Unit
 ) {
     val isUploading = albumUploadManager.isUploading()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
         // 服务器信息卡片
@@ -258,13 +267,16 @@ fun UploadContent(
 
             if (isUploading) {
                 Button(
-                    onClick = {
-                        // 可以添加暂停功能
-                    },
+                    onClick = onTogglePause,
                     modifier = Modifier.weight(1f),
-                    enabled = false
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isUploadPaused)
+                            MaterialTheme.colorScheme.tertiary
+                        else
+                            MaterialTheme.colorScheme.secondary
+                    )
                 ) {
-                    Text("暂停")
+                    Text(if (isUploadPaused) "继续" else "暂停")
                 }
             }
         }
