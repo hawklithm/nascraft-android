@@ -61,7 +61,7 @@ fun ServerDetailScreen(
     server: DiscoveredServer,
     albumUploadManager: AlbumUploadManager,
     fileUploadManager: FileUploadManager,
-    uploadState: UploadState?,
+    uploadStates: Map<String, UploadState>,
     onBackClick: () -> Unit,
     onStartUpload: (DiscoveredServer) -> Unit,
     onStopUpload: () -> Unit
@@ -71,15 +71,6 @@ fun ServerDetailScreen(
 
     // 创建 DLNA 管理器实例
     val dlnaManager = remember { DlnaManager() }
-
-    // 上传完成时切换到文件列表
-    LaunchedEffect(uploadState?.status) {
-        if (uploadState?.status is UploadStatus.Completed && currentPage == PageNav.UPLOAD) {
-            // 可选：上传完成后自动切换到文件列表
-            // currentPage = PageNav.FILES
-            // selectedTab = 1
-        }
-    }
 
     Scaffold(
         topBar = {
@@ -149,7 +140,7 @@ fun ServerDetailScreen(
                     PageNav.UPLOAD -> {
                         UploadContent(
                             albumUploadManager = albumUploadManager,
-                            uploadState = uploadState,
+                            uploadStates = uploadStates,
                             server = server,
                             onStartUpload = onStartUpload,
                             onStopUpload = onStopUpload
@@ -180,7 +171,7 @@ fun ServerDetailScreen(
 @Composable
 fun UploadContent(
     albumUploadManager: AlbumUploadManager,
-    uploadState: UploadState?,
+    uploadStates: Map<String, UploadState>,
     server: DiscoveredServer,
     onStartUpload: (DiscoveredServer) -> Unit,
     onStopUpload: () -> Unit
@@ -219,10 +210,21 @@ fun UploadContent(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // 上传进度卡片
-        uploadState?.let { state ->
-            UploadProgressCard(state)
+        // 上传进度卡片：每个进行中的文件一条独立进度条
+        if (uploadStates.isNotEmpty()) {
+            Text(
+                text = "并行上传中 ${uploadStates.size} 个文件",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
         }
+        uploadStates.values
+            .sortedBy { it.currentFileIndex ?: Int.MAX_VALUE }
+            .forEach { state ->
+                UploadProgressCard(state)
+                Spacer(modifier = Modifier.height(12.dp))
+            }
 
         Spacer(modifier = Modifier.height(16.dp))
 

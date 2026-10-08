@@ -32,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -62,7 +63,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var albumUploadManager: AlbumUploadManager
     private lateinit var fileUploadManager: FileUploadManager
 
-    private var uploadState by mutableStateOf<UploadState?>(null)
+    // 每个进行中的文件一条独立进度（key: photo uri）；文件完成后移除
+    private var uploadStates = mutableStateMapOf<String, UploadState>()
+    // 总体汇总事件（开始/全部完成），fileName 为空的哨兵状态
+    private var overallUploadState by mutableStateOf<UploadState?>(null)
     private var currentScreen by mutableStateOf<Screen>(Screen.DISCOVERY)
     private var connectedServer by mutableStateOf<DiscoveredServer?>(null)
 
@@ -88,7 +92,8 @@ class MainActivity : ComponentActivity() {
                 MainScreen(
                     currentScreen = currentScreen,
                     connectedServer = connectedServer,
-                    uploadState = uploadState,
+                    uploadStates = uploadStates,
+                    overallUploadState = overallUploadState,
                     discoveryManager = discoveryManager,
                     albumUploadManager = albumUploadManager,
                     fileUploadManager = fileUploadManager,
@@ -100,7 +105,8 @@ class MainActivity : ComponentActivity() {
                     },
                     onStopUpload = {
                         albumUploadManager.stopAlbumUpload()
-                        uploadState = null
+                        uploadStates.clear()
+                        overallUploadState = null
                     },
                     onBackToDiscovery = {
                         currentScreen = Screen.DISCOVERY
@@ -193,37 +199,44 @@ class MainActivity : ComponentActivity() {
         val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
         Log.i("MainActivity", "Starting album upload to: $baseUrl")
 
-        // 设置初始上传状态
-        uploadState = UploadState(
-            fileName = "准备上传...",
-            progress = 0f,
-            status = UploadStatus.Uploading
-        )
+        // 清空上一次的进度条（每个进行中的文件会各自出现一条）
+        uploadStates.clear()
 
         // 启动上传
         albumUploadManager.startAlbumUpload(baseUrl) { photoInfo, progress, status, totalFiles, currentFileIndex ->
             // 更新UI，这里可以显示上传进度
             Log.d("MainActivity", "Upload progress: ${photoInfo.name} - $progress, $status, totalFiles=$totalFiles, currentFileIndex=$currentFileIndex")
             runOnUiThread {
-                uploadState = UploadState(
-                    fileName = photoInfo.name,
-                    progress = progress,
-                    status = status,
-                    totalFiles = totalFiles,
-                    currentFileIndex = currentFileIndex
-                )
-            }
-
-            // 上传完成提示
-            if (status is UploadStatus.Completed && photoInfo.id == 0L && totalFiles != null && currentFileIndex != null) {
-                // photoInfo.id == 0L 表示这是一个总体完成通知
-                runOnUiThread {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "全部照片已上传完成！（共${totalFiles}张照片）",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    Log.i("MainActivity", "All photos uploaded successfully: $totalFiles files")
+                if (photoInfo.id == 0L) {
+                    // photoInfo.id == 0L 表示总体汇总事件
+                    overallUploadState = UploadState(
+                        fileName = photoInfo.name,
+                        progress = progress,
+                        status = status,
+                        totalFiles = totalFiles,
+                        currentFileIndex = currentFileIndex
+                    )
+                    if (status is UploadStatus.Completed && totalFiles != null && currentFileIndex != null) {
+                        uploadStates.clear()
+                        Toast.makeText(
+                            this@MainActivity,
+                            "全部照片已上传完成！（共${totalFiles}张照片）",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        Log.i("MainActivity", "All photos uploaded successfully: $totalFiles files")
+                    }
+                } else if (status is UploadStatus.Completed) {
+                    // 单个文件完成：移除它的进度条
+                    uploadStates.remove(photoInfo.uri)
+                } else {
+                    // 单个文件的独立进度条
+                    uploadStates[photoInfo.uri] = UploadState(
+                        fileName = photoInfo.name,
+                        progress = progress,
+                        status = status,
+                        totalFiles = totalFiles,
+                        currentFileIndex = currentFileIndex
+                    )
                 }
             }
         }
@@ -237,7 +250,8 @@ class MainActivity : ComponentActivity() {
 fun MainScreen(
     currentScreen: MainActivity.Screen,
     connectedServer: DiscoveredServer?,
-    uploadState: UploadState?,
+    uploadStates: Map<String, UploadState>,
+    overallUploadState: UploadState? = null,
     discoveryManager: DiscoveryManager,
     albumUploadManager: AlbumUploadManager,
     fileUploadManager: FileUploadManager,
@@ -251,7 +265,7 @@ fun MainScreen(
             DiscoveryScreen(
                 discoveryManager = discoveryManager,
                 onConnectClick = onConnectToServer,
-                uploadState = uploadState
+                uploadState = overallUploadState
             )
         }
         MainActivity.Screen.SERVER_DETAIL -> {
@@ -260,7 +274,7 @@ fun MainScreen(
                     server = server,
                     albumUploadManager = albumUploadManager,
                     fileUploadManager = fileUploadManager,
-                    uploadState = uploadState,
+                    uploadStates = uploadStates,
                     onBackClick = onBackToDiscovery,
                     onStartUpload = onStartUpload,
                     onStopUpload = onStopUpload
