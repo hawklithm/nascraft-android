@@ -13,8 +13,10 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -73,6 +75,7 @@ class AlbumUploadManager(private val context: Context) {
         private const val TAG = "AlbumUploadManager"
         private const val UPLOAD_RETRY_DELAY_MS = 2000L
         private const val CHUNK_SIZE = 2 * 1024 * 1024 // 2MB分片
+        private const val PARALLEL_UPLOADS = 5 // 同时并行上传的文件数
     }
 
     private val okHttpClient = OkHttpClient.Builder()
@@ -634,41 +637,50 @@ class AlbumUploadManager(private val context: Context) {
                     return@launch
                 }
 
-                Log.i(TAG, "Found ${photos.size} photos. Starting upload...")
+                Log.i(TAG, "Found ${photos.size} photos. Starting upload with $PARALLEL_UPLOADS parallel workers...")
 
-                var successCount = 0
-                var skippedCount = 0
-                var failedCount = 0
+                val nextIndex = AtomicInteger(0)
+                val successCount = AtomicInteger(0)
+                val failedAttempts = AtomicInteger(0)
+                val settledFiles = AtomicInteger(0)
 
-                // 2. 逐个上传
-                for ((index, photo) in photos.withIndex()) {
-                    if (shouldStop) {
-                        Log.i(TAG, "Upload stopped by user")
-                        break
-                    }
-
-                    Log.i(TAG, "Uploading photo ${index + 1}/${photos.size}: ${photo.name}")
-
-                    // Retry the whole file until success (or until stopped)
+                // 单个 worker：循环从队列领取下一个待上传文件，直到队列耗尽或用户停止
+                val worker: suspend () -> Unit = worker@{
                     while (!shouldStop) {
-                        val success = uploadSingleFile(baseUrl, photo, progressCallback, photos.size, index)
-                        if (success) {
-                            successCount++
-                            // 检查是否是跳过的文件（通过日志判断）
-                            // 由于我们无法直接获取跳过信息，这里只是统计总数
-                            break
+                        val index = nextIndex.getAndIncrement()
+                        if (index >= photos.size) return@worker
+
+                        val photo = photos[index]
+                        Log.i(TAG, "Worker picked photo ${index + 1}/${photos.size}: ${photo.name}")
+
+                        // 整文件失败后重试直到成功或用户停止（保持原有语义）
+                        while (!shouldStop) {
+                            val success = uploadSingleFile(baseUrl, photo, progressCallback, photos.size, index)
+                            if (success) {
+                                successCount.incrementAndGet()
+                                break
+                            }
+                            failedAttempts.incrementAndGet()
+                            Log.w(TAG, "File upload failed. Will retry after ${UPLOAD_RETRY_DELAY_MS}ms: ${photo.name}")
+                            kotlinx.coroutines.delay(UPLOAD_RETRY_DELAY_MS)
                         }
-                        failedCount++
-                        Log.w(TAG, "File upload failed. Will retry after ${UPLOAD_RETRY_DELAY_MS}ms: ${photo.name}")
-                        kotlinx.coroutines.delay(UPLOAD_RETRY_DELAY_MS)
+
+                        if (!shouldStop) {
+                            val settled = settledFiles.incrementAndGet()
+                            Log.i(TAG, "Progress: $settled/${photos.size} files settled (success=${successCount.get()})")
+                        }
                     }
                 }
+
+                // 2. 并行启动 worker 同时上传多个文件
+                val workers = List(PARALLEL_UPLOADS) { launch { worker() } }
+                workers.joinAll()
 
                 Log.i(TAG, "══════════════════════════════════════════════════════════════")
                 Log.i(TAG, "相册上传完成！统计信息：")
                 Log.i(TAG, "  总文件数: ${photos.size}")
-                Log.i(TAG, "  成功上传: $successCount")
-                Log.i(TAG, "  失败: $failedCount")
+                Log.i(TAG, "  成功上传: ${successCount.get()}")
+                Log.i(TAG, "  失败重试次数: ${failedAttempts.get()}")
                 Log.i(TAG, "  注: 已上传过的文件会显示'文件已存在，跳过上传'日志")
                 Log.i(TAG, "══════════════════════════════════════════════════════════════")
                 progressCallback?.invoke(
