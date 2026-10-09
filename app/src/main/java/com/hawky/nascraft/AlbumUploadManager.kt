@@ -31,6 +31,11 @@ import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 /**
+ * 上传媒体类型
+ */
+enum class UploadMediaType { ALL, IMAGE, VIDEO }
+
+/**
  * 相册照片信息
  */
 data class PhotoInfo(
@@ -119,8 +124,11 @@ class AlbumUploadManager(private val context: Context) {
      */
     fun getRequiredPermissions(): Array<String> {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Android 13+ (API 33+)
-            arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES)
+            // Android 13+ (API 33+)：图片与视频分别需要独立权限
+            arrayOf(
+                android.Manifest.permission.READ_MEDIA_IMAGES,
+                android.Manifest.permission.READ_MEDIA_VIDEO
+            )
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             // Android 11-12 (API 30-32)
             arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
@@ -134,112 +142,180 @@ class AlbumUploadManager(private val context: Context) {
     }
 
     /**
-     * 获取相册中所有照片
-     * @return List<PhotoInfo> 照片信息列表
+     * 获取相册中的媒体文件
+     * @param mediaType 媒体类型（ALL / IMAGE / VIDEO）
+     * @return List<PhotoInfo> 媒体文件信息列表
      */
-    suspend fun getAlbumPhotos(): List<PhotoInfo> = withContext(Dispatchers.IO) {
+    suspend fun getAlbumPhotos(mediaType: UploadMediaType = UploadMediaType.ALL): List<PhotoInfo> = withContext(Dispatchers.IO) {
         val photos = mutableListOf<PhotoInfo>()
-        
+
         if (!hasRequiredPermissions()) {
-            Log.e(TAG, "Missing required permissions. Cannot access album photos.")
+            Log.e(TAG, "Missing required permissions. Cannot access album media.")
             return@withContext photos
         }
 
         try {
-            // MediaStore查询的列
-            val projection = arrayOf(
-                MediaStore.Images.Media._ID,
-                MediaStore.Images.Media.DISPLAY_NAME,
-                MediaStore.Images.Media.MIME_TYPE,
-                MediaStore.Images.Media.SIZE,
-                MediaStore.Images.Media.DATE_ADDED,
-                MediaStore.Images.Media.DATE_MODIFIED,
-                MediaStore.Images.Media.WIDTH,
-                MediaStore.Images.Media.HEIGHT,
-                MediaStore.Images.Media.ORIENTATION
-            )
-
-            val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
-
-            // 使用外部存储的内容URI
-            val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
-            } else {
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            if (mediaType == UploadMediaType.ALL || mediaType == UploadMediaType.IMAGE) {
+                photos += queryImages()
             }
-
-            Log.d(TAG, "Querying images from MediaStore. URI: $collection")
-
-            // 查询MediaStore获取所有图片
-            val cursor = context.contentResolver.query(
-                collection,
-                projection,
-                null,
-                null,
-                sortOrder
-            )
-
-            if (cursor == null) {
-                Log.e(TAG, "MediaStore query failed: cursor is null")
-                return@withContext photos
+            if (mediaType == UploadMediaType.ALL || mediaType == UploadMediaType.VIDEO) {
+                photos += queryVideos()
             }
-
-            cursor.use { cursor ->
-                Log.d(TAG, "Cursor columns: ${cursor.columnCount}")
-                Log.d(TAG, "Found ${cursor.count} photos in MediaStore")
-
-                val idIndex = cursor.getColumnIndex(MediaStore.Images.Media._ID)
-                val nameIndex = cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
-                val mimeTypeIndex = cursor.getColumnIndex(MediaStore.Images.Media.MIME_TYPE)
-                val sizeIndex = cursor.getColumnIndex(MediaStore.Images.Media.SIZE)
-                val dateAddedIndex = cursor.getColumnIndex(MediaStore.Images.Media.DATE_ADDED)
-                val dateModifiedIndex = cursor.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED)
-                val widthIndex = cursor.getColumnIndex(MediaStore.Images.Media.WIDTH)
-                val heightIndex = cursor.getColumnIndex(MediaStore.Images.Media.HEIGHT)
-                val orientationIndex = cursor.getColumnIndex(MediaStore.Images.Media.ORIENTATION)
-
-                var photoCount = 0
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idIndex)
-
-                    // 构建内容URI
-                    val contentUri = ContentUris.withAppendedId(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        id
-                    )
-
-                    val photoInfo = PhotoInfo(
-                        id = id,
-                        uri = contentUri.toString(),
-                        name = cursor.getString(nameIndex) ?: "",
-                        mimeType = cursor.getString(mimeTypeIndex) ?: "image/jpeg",
-                        size = cursor.getLong(sizeIndex),
-                        dateAdded = cursor.getLong(dateAddedIndex),
-                        dateModified = cursor.getLong(dateModifiedIndex),
-                        width = cursor.getInt(widthIndex),
-                        height = cursor.getInt(heightIndex),
-                        orientation = cursor.getInt(orientationIndex)
-                    )
-
-                    photos.add(photoInfo)
-                    photoCount++
-
-                    // 调试：记录前几张照片
-                    if (photoCount <= 3) {
-                        Log.d(TAG, "Photo $photoCount - name=${photoInfo.name}, size=${photoInfo.size}")
-                    }
-                }
-
-                Log.i(TAG, "Successfully loaded $photoCount photos")
-            }
-
         } catch (e: SecurityException) {
-            Log.e(TAG, "Permission denied while accessing photos", e)
+            Log.e(TAG, "Permission denied while accessing album media", e)
         } catch (e: Exception) {
-            Log.e(TAG, "Error while reading album photos", e)
+            Log.e(TAG, "Error while reading album media", e)
         }
 
-        return@withContext photos
+        // 图片与视频合并后按加入相册时间倒序排列
+        return@withContext photos.sortedByDescending { it.dateAdded }
+    }
+
+    /**
+     * 查询相册中的图片
+     */
+    private fun queryImages(): List<PhotoInfo> {
+        val photos = mutableListOf<PhotoInfo>()
+
+        val projection = arrayOf(
+            MediaStore.Images.Media._ID,
+            MediaStore.Images.Media.DISPLAY_NAME,
+            MediaStore.Images.Media.MIME_TYPE,
+            MediaStore.Images.Media.SIZE,
+            MediaStore.Images.Media.DATE_ADDED,
+            MediaStore.Images.Media.DATE_MODIFIED,
+            MediaStore.Images.Media.WIDTH,
+            MediaStore.Images.Media.HEIGHT,
+            MediaStore.Images.Media.ORIENTATION
+        )
+
+        val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
+
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        } else {
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        }
+
+        Log.d(TAG, "Querying images from MediaStore. URI: $collection")
+
+        val cursor = context.contentResolver.query(collection, projection, null, null, sortOrder)
+        if (cursor == null) {
+            Log.e(TAG, "MediaStore images query failed: cursor is null")
+            return photos
+        }
+
+        cursor.use { c ->
+            val idIndex = c.getColumnIndex(MediaStore.Images.Media._ID)
+            val nameIndex = c.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
+            val mimeTypeIndex = c.getColumnIndex(MediaStore.Images.Media.MIME_TYPE)
+            val sizeIndex = c.getColumnIndex(MediaStore.Images.Media.SIZE)
+            val dateAddedIndex = c.getColumnIndex(MediaStore.Images.Media.DATE_ADDED)
+            val dateModifiedIndex = c.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED)
+            val widthIndex = c.getColumnIndex(MediaStore.Images.Media.WIDTH)
+            val heightIndex = c.getColumnIndex(MediaStore.Images.Media.HEIGHT)
+            val orientationIndex = c.getColumnIndex(MediaStore.Images.Media.ORIENTATION)
+
+            var count = 0
+            while (c.moveToNext()) {
+                val id = c.getLong(idIndex)
+                val contentUri = ContentUris.withAppendedId(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    id
+                )
+                photos.add(
+                    PhotoInfo(
+                        id = id,
+                        uri = contentUri.toString(),
+                        name = c.getString(nameIndex) ?: "",
+                        mimeType = c.getString(mimeTypeIndex) ?: "image/jpeg",
+                        size = c.getLong(sizeIndex),
+                        dateAdded = c.getLong(dateAddedIndex),
+                        dateModified = c.getLong(dateModifiedIndex),
+                        width = c.getInt(widthIndex),
+                        height = c.getInt(heightIndex),
+                        orientation = c.getInt(orientationIndex)
+                    )
+                )
+                count++
+            }
+            Log.i(TAG, "Successfully loaded $count images")
+        }
+
+        return photos
+    }
+
+    /**
+     * 查询相册中的视频
+     */
+    private fun queryVideos(): List<PhotoInfo> {
+        val photos = mutableListOf<PhotoInfo>()
+
+        // 视频没有 ORIENTATION 列，宽高列名与图片一致
+        val projection = arrayOf(
+            MediaStore.Video.Media._ID,
+            MediaStore.Video.Media.DISPLAY_NAME,
+            MediaStore.Video.Media.MIME_TYPE,
+            MediaStore.Video.Media.SIZE,
+            MediaStore.Video.Media.DATE_ADDED,
+            MediaStore.Video.Media.DATE_MODIFIED,
+            MediaStore.Video.Media.WIDTH,
+            MediaStore.Video.Media.HEIGHT
+        )
+
+        val sortOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
+
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        } else {
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        }
+
+        Log.d(TAG, "Querying videos from MediaStore. URI: $collection")
+
+        val cursor = context.contentResolver.query(collection, projection, null, null, sortOrder)
+        if (cursor == null) {
+            Log.e(TAG, "MediaStore videos query failed: cursor is null")
+            return photos
+        }
+
+        cursor.use { c ->
+            val idIndex = c.getColumnIndex(MediaStore.Video.Media._ID)
+            val nameIndex = c.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME)
+            val mimeTypeIndex = c.getColumnIndex(MediaStore.Video.Media.MIME_TYPE)
+            val sizeIndex = c.getColumnIndex(MediaStore.Video.Media.SIZE)
+            val dateAddedIndex = c.getColumnIndex(MediaStore.Video.Media.DATE_ADDED)
+            val dateModifiedIndex = c.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED)
+            val widthIndex = c.getColumnIndex(MediaStore.Video.Media.WIDTH)
+            val heightIndex = c.getColumnIndex(MediaStore.Video.Media.HEIGHT)
+
+            var count = 0
+            while (c.moveToNext()) {
+                val id = c.getLong(idIndex)
+                val contentUri = ContentUris.withAppendedId(
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                    id
+                )
+                photos.add(
+                    PhotoInfo(
+                        id = id,
+                        uri = contentUri.toString(),
+                        name = c.getString(nameIndex) ?: "",
+                        mimeType = c.getString(mimeTypeIndex) ?: "video/mp4",
+                        size = c.getLong(sizeIndex),
+                        dateAdded = c.getLong(dateAddedIndex),
+                        dateModified = c.getLong(dateModifiedIndex),
+                        width = c.getInt(widthIndex),
+                        height = c.getInt(heightIndex),
+                        orientation = 0
+                    )
+                )
+                count++
+            }
+            Log.i(TAG, "Successfully loaded $count videos")
+        }
+
+        return photos
     }
 
     /**
@@ -649,15 +725,20 @@ class AlbumUploadManager(private val context: Context) {
     /**
      * 启动相册自动上传
      * @param baseUrl 服务器基础URL
+     * @param mediaType 媒体类型（ALL / IMAGE / VIDEO）
      * @param progressCallback 进度回调（可选）
      */
-    fun startAlbumUpload(baseUrl: String, progressCallback: UploadProgressCallback? = null) {
+    fun startAlbumUpload(
+        baseUrl: String,
+        mediaType: UploadMediaType = UploadMediaType.ALL,
+        progressCallback: UploadProgressCallback? = null
+    ) {
         if (isUploading) {
             Log.w(TAG, "Album upload is already running")
             return
         }
 
-        Log.i(TAG, "startAlbumUpload: baseUrl=$baseUrl")
+        Log.i(TAG, "startAlbumUpload: baseUrl=$baseUrl, mediaType=$mediaType")
 
         if (!hasRequiredPermissions()) {
             Log.e(TAG, "Missing required permissions. Cannot access album photos.")
@@ -677,15 +758,15 @@ class AlbumUploadManager(private val context: Context) {
 
         uploadJob = coroutineScope.launch {
             try {
-                // 1. 获取相册照片
-                val photos = getAlbumPhotos()
+                // 1. 获取相册媒体文件
+                val photos = getAlbumPhotos(mediaType)
                 if (photos.isEmpty()) {
-                    Log.i(TAG, "No photos found in album")
+                    Log.i(TAG, "No media files found in album")
                     isUploading = false
                     return@launch
                 }
 
-                Log.i(TAG, "Found ${photos.size} photos. Starting upload with $PARALLEL_UPLOADS parallel workers...")
+                Log.i(TAG, "Found ${photos.size} media files. Starting upload with $PARALLEL_UPLOADS parallel workers...")
 
                 val nextIndex = AtomicInteger(0)
                 val successCount = AtomicInteger(0)

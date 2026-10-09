@@ -69,6 +69,8 @@ class MainActivity : ComponentActivity() {
     private var overallUploadState by mutableStateOf<UploadState?>(null)
     // 相册上传是否处于暂停状态（驱动暂停/继续按钮 UI）
     private var isUploadPaused by mutableStateOf(false)
+    // 当前选择的上传媒体类型（仅图片 / 仅视频 / 全部）
+    private var selectedUploadMediaType by mutableStateOf(UploadMediaType.ALL)
     private var currentScreen by mutableStateOf<Screen>(Screen.DISCOVERY)
     private var connectedServer by mutableStateOf<DiscoveredServer?>(null)
 
@@ -97,6 +99,7 @@ class MainActivity : ComponentActivity() {
                     uploadStates = uploadStates,
                     overallUploadState = overallUploadState,
                     isUploadPaused = isUploadPaused,
+                    selectedUploadMediaType = selectedUploadMediaType,
                     discoveryManager = discoveryManager,
                     albumUploadManager = albumUploadManager,
                     fileUploadManager = fileUploadManager,
@@ -104,7 +107,10 @@ class MainActivity : ComponentActivity() {
                         onConnectToServer(server)
                     },
                     onStartUpload = { server ->
-                        startAlbumUpload(server)
+                        startAlbumUpload(server, selectedUploadMediaType)
+                    },
+                    onUploadMediaTypeChange = { mediaType ->
+                        selectedUploadMediaType = mediaType
                     },
                     onStopUpload = {
                         albumUploadManager.stopAlbumUpload()
@@ -166,7 +172,7 @@ class MainActivity : ComponentActivity() {
         } else {
             // 所有权限都已授予
             pendingUploadServer?.let { server ->
-                startAlbumUpload(server)
+                startAlbumUpload(server, selectedUploadMediaType)
             }
             pendingUploadServer = null
         }
@@ -190,7 +196,7 @@ class MainActivity : ComponentActivity() {
                 // 可以显示提示信息
                 Toast.makeText(
                     this,
-                    "需要相册访问权限才能上传照片",
+                    "需要相册访问权限才能上传照片和视频",
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -202,7 +208,7 @@ class MainActivity : ComponentActivity() {
     /**
      * 开始相册上传
      */
-    fun startAlbumUpload(server: DiscoveredServer) {
+    fun startAlbumUpload(server: DiscoveredServer, mediaType: UploadMediaType = UploadMediaType.ALL) {
         if (!albumUploadManager.hasRequiredPermissions()) {
             pendingUploadServer = server
             requestAlbumPermissions()
@@ -210,14 +216,14 @@ class MainActivity : ComponentActivity() {
         }
 
         val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
-        Log.i("MainActivity", "Starting album upload to: $baseUrl")
+        Log.i("MainActivity", "Starting album upload to: $baseUrl, mediaType=$mediaType")
 
         // 清空上一次的进度条（每个进行中的文件会各自出现一条）
         uploadStates.clear()
         isUploadPaused = false
 
         // 启动上传
-        albumUploadManager.startAlbumUpload(baseUrl) { photoInfo, progress, status, totalFiles, currentFileIndex ->
+        albumUploadManager.startAlbumUpload(baseUrl, mediaType) { photoInfo, progress, status, totalFiles, currentFileIndex ->
             // 更新UI，这里可以显示上传进度
             Log.d("MainActivity", "Upload progress: ${photoInfo.name} - $progress, $status, totalFiles=$totalFiles, currentFileIndex=$currentFileIndex")
             runOnUiThread {
@@ -234,10 +240,10 @@ class MainActivity : ComponentActivity() {
                         uploadStates.clear()
                         Toast.makeText(
                             this@MainActivity,
-                            "全部照片已上传完成！（共${totalFiles}张照片）",
+                            "全部文件已上传完成！（共${totalFiles}个文件）",
                             Toast.LENGTH_LONG
                         ).show()
-                        Log.i("MainActivity", "All photos uploaded successfully: $totalFiles files")
+                        Log.i("MainActivity", "All files uploaded successfully: $totalFiles files")
                     }
                 } else if (status is UploadStatus.Completed) {
                     // 单个文件完成：移除它的进度条
@@ -267,6 +273,7 @@ fun MainScreen(
     uploadStates: Map<String, UploadState>,
     overallUploadState: UploadState? = null,
     isUploadPaused: Boolean = false,
+    selectedUploadMediaType: UploadMediaType = UploadMediaType.ALL,
     discoveryManager: DiscoveryManager,
     albumUploadManager: AlbumUploadManager,
     fileUploadManager: FileUploadManager,
@@ -274,6 +281,7 @@ fun MainScreen(
     onStartUpload: (DiscoveredServer) -> Unit,
     onStopUpload: () -> Unit,
     onTogglePause: () -> Unit,
+    onUploadMediaTypeChange: (UploadMediaType) -> Unit,
     onBackToDiscovery: () -> Unit
 ) {
     when (currentScreen) {
@@ -292,10 +300,12 @@ fun MainScreen(
                     fileUploadManager = fileUploadManager,
                     uploadStates = uploadStates,
                     isUploadPaused = isUploadPaused,
+                    selectedUploadMediaType = selectedUploadMediaType,
                     onBackClick = onBackToDiscovery,
                     onStartUpload = onStartUpload,
                     onStopUpload = onStopUpload,
-                    onTogglePause = onTogglePause
+                    onTogglePause = onTogglePause,
+                    onUploadMediaTypeChange = onUploadMediaTypeChange
                 )
             }
         }

@@ -20,6 +20,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -65,10 +67,12 @@ fun ServerDetailScreen(
     fileUploadManager: FileUploadManager,
     uploadStates: Map<String, UploadState>,
     isUploadPaused: Boolean = false,
+    selectedUploadMediaType: UploadMediaType = UploadMediaType.ALL,
     onBackClick: () -> Unit,
     onStartUpload: (DiscoveredServer) -> Unit,
     onStopUpload: () -> Unit,
-    onTogglePause: () -> Unit
+    onTogglePause: () -> Unit,
+    onUploadMediaTypeChange: (UploadMediaType) -> Unit
 ) {
     var currentPage by rememberSaveable { mutableStateOf(PageNav.UPLOAD) }
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -147,9 +151,11 @@ fun ServerDetailScreen(
                             uploadStates = uploadStates,
                             server = server,
                             isUploadPaused = isUploadPaused,
+                            selectedUploadMediaType = selectedUploadMediaType,
                             onStartUpload = onStartUpload,
                             onStopUpload = onStopUpload,
-                            onTogglePause = onTogglePause
+                            onTogglePause = onTogglePause,
+                            onUploadMediaTypeChange = onUploadMediaTypeChange
                         )
                     }
                     PageNav.FILES -> {
@@ -180,9 +186,11 @@ fun UploadContent(
     uploadStates: Map<String, UploadState>,
     server: DiscoveredServer,
     isUploadPaused: Boolean = false,
+    selectedUploadMediaType: UploadMediaType = UploadMediaType.ALL,
     onStartUpload: (DiscoveredServer) -> Unit,
     onStopUpload: () -> Unit,
-    onTogglePause: () -> Unit
+    onTogglePause: () -> Unit,
+    onUploadMediaTypeChange: (UploadMediaType) -> Unit
 ) {
     val isUploading = albumUploadManager.isUploading()
 
@@ -234,6 +242,39 @@ fun UploadContent(
                 UploadProgressCard(state)
                 Spacer(modifier = Modifier.height(12.dp))
             }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // 媒体类型选择（上传进行中置灰不可选）
+        Text(
+            text = "上传内容",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Medium
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            UploadMediaTypeChip(
+                label = "全部",
+                selected = selectedUploadMediaType == UploadMediaType.ALL,
+                enabled = !isUploading,
+                onClick = { onUploadMediaTypeChange(UploadMediaType.ALL) }
+            )
+            UploadMediaTypeChip(
+                label = "仅图片",
+                selected = selectedUploadMediaType == UploadMediaType.IMAGE,
+                enabled = !isUploading,
+                onClick = { onUploadMediaTypeChange(UploadMediaType.IMAGE) }
+            )
+            UploadMediaTypeChip(
+                label = "仅视频",
+                selected = selectedUploadMediaType == UploadMediaType.VIDEO,
+                enabled = !isUploading,
+                onClick = { onUploadMediaTypeChange(UploadMediaType.VIDEO) }
+            )
+        }
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -303,7 +344,7 @@ fun UploadContent(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "• 自动上传手机相册中的所有照片\n• 支持断点续传\n• 支持文件去重（相同MD5不重复上传）\n• 实时显示上传进度",
+                    text = "• 自动上传手机相册中的照片和视频\n• 支持仅图片 / 仅视频 / 全部三种模式\n• 支持断点续传\n• 支持文件去重（相同MD5不重复上传）\n• 实时显示上传进度",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -346,6 +387,27 @@ fun UploadContent(
             }
         }
     }
+}
+
+/**
+ * 上传媒体类型单选勾选框
+ */
+@Composable
+fun UploadMediaTypeChip(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        enabled = enabled,
+        label = { Text(label) },
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer
+        )
+    )
 }
 
 /**

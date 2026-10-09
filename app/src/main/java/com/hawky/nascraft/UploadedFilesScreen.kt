@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Refresh
 import coil.compose.AsyncImage
 import com.google.accompanist.pager.ExperimentalPagerApi
@@ -124,6 +125,10 @@ fun UploadedFilesScreen(
     var availableSources by remember { mutableStateOf<List<String>>(emptyList()) }
     var showSourceFilter by remember { mutableStateOf(false) }
 
+    // 媒体类型筛选状态：null=全部, "image"/"video"/"other"
+    var mediaTypeFilter by remember { mutableStateOf<String?>(null) }
+    var showMediaTypeFilter by remember { mutableStateOf(false) }
+
     // 加载数据
     suspend fun loadFiles(refresh: Boolean = false) {
         if (refresh) {
@@ -137,7 +142,15 @@ fun UploadedFilesScreen(
         errorMessage = null
 
         val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
-        val response = fileUploadManager.getUploadedFiles(baseUrl, page = currentPage, pageSize = 20, sortBy = sortBy, order = order, sourceDevice = sourceFilter)
+        val response = fileUploadManager.getUploadedFiles(
+            baseUrl,
+            page = currentPage,
+            pageSize = 20,
+            sortBy = sortBy,
+            order = order,
+            sourceDevice = sourceFilter,
+            mediaType = mediaTypeFilter
+        )
 
         if (response != null) {
             if (refresh) {
@@ -237,6 +250,15 @@ fun UploadedFilesScreen(
         }
     }
 
+    // 应用媒体类型筛选并刷新（type == null 表示全部）
+    val applyMediaTypeFilter: (String?) -> Unit = { type ->
+        showMediaTypeFilter = false
+        if (mediaTypeFilter != type) {
+            mediaTypeFilter = type
+            coroutineScope.launch { loadFiles(refresh = true) }
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -315,6 +337,20 @@ fun UploadedFilesScreen(
                                     }
                                 )
                             }
+                        }
+                    }
+                    Box {
+                        IconButton(onClick = { showMediaTypeFilter = true }) {
+                            Icon(Icons.Default.Movie, contentDescription = "按媒体类型筛选")
+                        }
+                        DropdownMenu(
+                            expanded = showMediaTypeFilter,
+                            onDismissRequest = { showMediaTypeFilter = false }
+                        ) {
+                            MediaTypeFilterItem("全部", null, mediaTypeFilter, applyMediaTypeFilter)
+                            MediaTypeFilterItem("图片", "image", mediaTypeFilter, applyMediaTypeFilter)
+                            MediaTypeFilterItem("视频", "video", mediaTypeFilter, applyMediaTypeFilter)
+                            MediaTypeFilterItem("其他", "other", mediaTypeFilter, applyMediaTypeFilter)
                         }
                     }
                     Box {
@@ -1049,6 +1085,33 @@ fun LoadingMoreIndicator() {
             Text("加载更多...")
         }
     }
+}
+
+/**
+ * 媒体类型筛选菜单项（带当前选中高亮）
+ */
+@Composable
+fun MediaTypeFilterItem(
+    label: String,
+    type: String?,
+    currentType: String?,
+    onClick: (String?) -> Unit
+) {
+    val selected = currentType == type
+    DropdownMenuItem(
+        text = {
+            Text(
+                text = label,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+            )
+        },
+        onClick = { onClick(type) },
+        trailingIcon = {
+            if (selected) {
+                Icon(Icons.Default.Check, contentDescription = "已选中")
+            }
+        }
+    )
 }
 
 /**
