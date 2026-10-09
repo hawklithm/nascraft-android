@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -18,12 +19,19 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Refresh
 import coil.compose.AsyncImage
 import com.google.accompanist.pager.ExperimentalPagerApi
 import com.google.accompanist.pager.HorizontalPager
@@ -36,31 +44,29 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import android.widget.Toast
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
@@ -76,6 +82,7 @@ fun UploadedFilesScreen(
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
     val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
 
     var isLoading by remember { mutableStateOf(true) }
@@ -97,6 +104,10 @@ fun UploadedFilesScreen(
     var selectedFileForCast by remember { mutableStateOf<UploadedFile?>(null) }
     var castDevices by remember { mutableStateOf<List<Pair<DlnaRenderer, PlaybackInfo>>>(emptyList()) }
     var castLoading by remember { mutableStateOf(false) }
+
+    // 展示方式与详情浮层状态
+    var viewMode by remember { mutableStateOf(ViewMode.LIST) }
+    var selectedFileForDetail by remember { mutableStateOf<UploadedFile?>(null) }
 
     // 加载数据
     suspend fun loadFiles(refresh: Boolean = false) {
@@ -120,7 +131,7 @@ fun UploadedFilesScreen(
                 uploadedFiles = uploadedFiles + response.files
             }
             totalFiles = response.totalFiles
-            hasMore = uploadedFiles.size < totalFiles
+            hasMore = uploadedFiles.size < totalFiles && response.files.isNotEmpty()
             currentPage++
         } else {
             errorMessage = "加载失败，请重试"
@@ -129,24 +140,61 @@ fun UploadedFilesScreen(
         isLoading = false
     }
 
-    // 自动检测滚动到底部
-    val shouldLoadMore by remember {
-        derivedStateOf {
-            val layoutInfo = listState.layoutInfo
-            val lastVisibleItem = layoutInfo.visibleItemsInfo.lastOrNull()
-            lastVisibleItem != null && lastVisibleItem.index == layoutInfo.totalItemsCount - 1
+    // 自动检测滚动到底部：用 snapshotFlow 持续观察滚动位置。
+    // 不能用 LaunchedEffect(shouldLoadMore)（布尔为 key）：isLoading 置 true 后
+    // 列表底部会多出 loading item，totalItemsCount 变化会让 shouldLoadMore 从 true
+    // 掉回 false，从而取消正在执行的 loadFiles 协程，isLoading 卡死在 true。
+    LaunchedEffect(Unit) {
+        snapshotFlow {
+            val totalCount: Int
+            val lastIndex: Int
+            if (viewMode == ViewMode.LIST) {
+                val info = listState.layoutInfo
+                totalCount = info.totalItemsCount
+                lastIndex = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            } else {
+                val info = gridState.layoutInfo
+                totalCount = info.totalItemsCount
+                lastIndex = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            }
+            Triple(viewMode, totalCount, lastIndex)
         }
-    }
-
-    LaunchedEffect(shouldLoadMore) {
-        if (shouldLoadMore && !isLoading && hasMore) {
-            loadFiles(refresh = false)
-        }
+            .distinctUntilChanged()
+            .collect { (_, totalCount, lastIndex) ->
+                if (totalCount > 0 && lastIndex >= totalCount - 1 && !isLoading && hasMore) {
+                    loadFiles(refresh = false)
+                }
+            }
     }
 
     // 初始加载
     LaunchedEffect(Unit) {
         loadFiles(refresh = true)
+    }
+
+    // 打开投屏设备选择
+    val openCastSelection: (UploadedFile) -> Unit = { file ->
+        coroutineScope.launch {
+            castLoading = true
+            val devices = dlnaManager.listRenderers(baseUrl)
+            if (devices != null) {
+                castDevices = devices
+                selectedFileForCast = file
+                showCastDeviceSelection = true
+            } else {
+                Toast.makeText(context, "获取设备列表失败", Toast.LENGTH_SHORT).show()
+            }
+            castLoading = false
+        }
+    }
+
+    // 打开全屏图片预览
+    val openPreview: (UploadedFile) -> Unit = { file ->
+        val index = previewableFiles.indexOfFirst { it.fileId == file.fileId }
+        if (index >= 0) {
+            initialPreviewIndex = index
+            showImagePreview = true
+        }
     }
 
     Column(
@@ -198,15 +246,27 @@ fun UploadedFilesScreen(
                         )
                     }
                 }
-                IconButton(
-                    onClick = {
-                        coroutineScope.launch {
-                            loadFiles(refresh = true)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = {
+                            viewMode = if (viewMode == ViewMode.LIST) ViewMode.GRID else ViewMode.LIST
                         }
-                    },
-                    enabled = !isLoading
-                ) {
-                    Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                    ) {
+                        Icon(
+                            imageVector = if (viewMode == ViewMode.LIST) Icons.Default.GridView else Icons.AutoMirrored.Filled.List,
+                            contentDescription = if (viewMode == ViewMode.LIST) "切换为网格视图" else "切换为列表视图"
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                loadFiles(refresh = true)
+                            }
+                        },
+                        enabled = !isLoading
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                    }
                 }
             }
         }
@@ -262,65 +322,64 @@ fun UploadedFilesScreen(
                 }
             }
         } else {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    horizontal = 16.dp,
-                    vertical = 16.dp
-                )
-            ) {
-                items(uploadedFiles, key = { it.fileId }) { file ->
-                    FileCard(
-                        file = file,
-                        fileUploadManager = fileUploadManager,
-                        baseUrl = baseUrl,
-                        onPreviewClick = {
-                            // Find index in previewable list and open preview
-                            val index = previewableFiles.indexOfFirst { it.fileId == file.fileId }
-                            if (index >= 0) {
-                                initialPreviewIndex = index
-                                showImagePreview = true
-                            }
-                        },
-                        onCastClick = { selectedFile ->
-                            coroutineScope.launch {
-                                castLoading = true
-                                val devices = dlnaManager.listRenderers(baseUrl)
-                                if (devices != null) {
-                                    castDevices = devices
-                                    selectedFileForCast = selectedFile
-                                    showCastDeviceSelection = true
-                                } else {
-                                    Toast.makeText(context, "获取设备列表失败", Toast.LENGTH_SHORT).show()
-                                }
-                                castLoading = false
+            when (viewMode) {
+                ViewMode.LIST -> {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                            horizontal = 16.dp,
+                            vertical = 16.dp
+                        )
+                    ) {
+                        items(uploadedFiles, key = { it.fileId }) { file ->
+                            FileCard(
+                                file = file,
+                                fileUploadManager = fileUploadManager,
+                                baseUrl = baseUrl,
+                                onPreviewClick = { openPreview(file) },
+                                onCastClick = { openCastSelection(it) }
+                            )
+                        }
+
+                        // 加载更多指示器
+                        if (isLoading && uploadedFiles.isNotEmpty()) {
+                            item {
+                                LoadingMoreIndicator()
                             }
                         }
-                    )
+                    }
                 }
 
-                // 加载更多指示器
-                if (isLoading && uploadedFiles.isNotEmpty()) {
-                    item {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp
-                                )
-                                Text("加载更多...")
+                ViewMode.GRID -> {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        state = gridState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                            horizontal = 16.dp,
+                            vertical = 16.dp
+                        )
+                    ) {
+                        gridItems(uploadedFiles, key = { it.fileId }) { file ->
+                            GridImageCell(
+                                file = file,
+                                baseUrl = baseUrl,
+                                onClick = { selectedFileForDetail = file }
+                            )
+                        }
+
+                        // 加载更多指示器（跨整行）
+                        if (isLoading && uploadedFiles.isNotEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                LoadingMoreIndicator()
                             }
                         }
                     }
@@ -480,6 +539,21 @@ fun UploadedFilesScreen(
                     }
                 }
             }
+        }
+
+        // 详情浮层：网格视图点击缩略图后弹出
+        selectedFileForDetail?.let { detailFile ->
+            FileDetailSheet(
+                file = detailFile,
+                baseUrl = baseUrl,
+                fileUploadManager = fileUploadManager,
+                onCastClick = {
+                    selectedFileForDetail = null
+                    openCastSelection(detailFile)
+                },
+                onPreviewClick = { openPreview(detailFile) },
+                onDismiss = { selectedFileForDetail = null }
+            )
         }
     }
 }
@@ -687,5 +761,202 @@ fun StatusChip(
             color = contentColor,
             fontWeight = FontWeight.Medium
         )
+    }
+}
+
+/**
+ * 已上传文件的展示方式
+ */
+enum class ViewMode { LIST, GRID }
+
+/**
+ * 判断文件名是否为图片
+ */
+fun isImageFile(filename: String): Boolean {
+    val lower = filename.lowercase()
+    return lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
+            lower.endsWith(".png") || lower.endsWith(".gif") ||
+            lower.endsWith(".webp") || lower.endsWith(".bmp")
+}
+
+/**
+ * 网格视图的缩略图格子
+ */
+@Composable
+fun GridImageCell(
+    file: UploadedFile,
+    baseUrl: String,
+    onClick: () -> Unit
+) {
+    val thumbnailFullUrl = if (file.thumbnailUrl != null) "$baseUrl${file.thumbnailUrl}" else null
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        if (!thumbnailFullUrl.isNullOrEmpty()) {
+            AsyncImage(
+                model = thumbnailFullUrl,
+                contentDescription = file.filename,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Icon(
+                imageVector = if (isImageFile(file.filename)) Icons.Default.Image else Icons.Default.Description,
+                contentDescription = null,
+                modifier = Modifier.size(32.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/**
+ * 详情浮层：点击缩略图后弹出，展示大图、详细信息与投屏按钮
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FileDetailSheet(
+    file: UploadedFile,
+    baseUrl: String,
+    fileUploadManager: FileUploadManager,
+    onCastClick: () -> Unit,
+    onPreviewClick: (() -> Unit)?,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            // 大图
+            val fullImageUrl = "$baseUrl/api/download/${file.fileId}"
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 320.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                if (file.thumbnailUrl != null || isImageFile(file.filename)) {
+                    AsyncImage(
+                        model = fullImageUrl,
+                        contentDescription = file.filename,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp),
+                        contentScale = ContentScale.Fit
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Description,
+                        contentDescription = null,
+                        modifier = Modifier.size(64.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = file.filename,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            DetailRow("大小", fileUploadManager.formatFileSize(file.totalSize))
+            DetailRow("状态", fileUploadManager.getStatusText(file.status))
+            DetailRow("MD5", file.checksum)
+            DetailRow("上传时间", fileUploadManager.formatTimestamp(file.lastUpdated))
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // 操作按钮
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (file.status == 2) {
+                    Button(
+                        onClick = onCastClick,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("投屏到电视")
+                    }
+                }
+                if (onPreviewClick != null && file.thumbnailUrl != null) {
+                    Button(
+                        onClick = onPreviewClick,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer
+                        )
+                    ) {
+                        Text("预览")
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+/**
+ * 详情信息行
+ */
+@Composable
+fun DetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            textAlign = androidx.compose.ui.text.style.TextAlign.End
+        )
+    }
+}
+
+/**
+ * 加载更多指示器
+ */
+@Composable
+fun LoadingMoreIndicator() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp
+            )
+            Text("加载更多...")
+        }
     }
 }
