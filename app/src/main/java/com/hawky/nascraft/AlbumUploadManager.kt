@@ -26,7 +26,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.InputStream
+import java.io.FileInputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
@@ -79,7 +79,6 @@ class AlbumUploadManager(private val context: Context) {
     companion object {
         private const val TAG = "AlbumUploadManager"
         private const val UPLOAD_RETRY_DELAY_MS = 2000L
-        private const val CHUNK_SIZE = 2 * 1024 * 1024 // 2MB分片
         private const val PARALLEL_UPLOADS = 5 // 同时并行上传的文件数
     }
 
@@ -89,16 +88,22 @@ class AlbumUploadManager(private val context: Context) {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    /** MD5 本地缓存：key = photo.id + dateModified；照片未变则复用，避免重复全量哈希 */
+    /** MD5 本地缓存：key = photo.id + dateModified；文件未变则复用，避免重复全量哈希。
+     *  value = "md5|size"，同时缓存字节数，避免缓存命中时还得再扫一遍取大小 */
     private val md5Cache by lazy {
         context.getSharedPreferences("nascraft_md5_cache", Context.MODE_PRIVATE)
     }
 
-    private fun getCachedMd5(id: Long, dateModified: Long): String? =
-        md5Cache.getString("md5_${id}_$dateModified", null)
+    private fun getCachedDigest(id: Long, dateModified: Long): Pair<String, Long>? {
+        val raw = md5Cache.getString("md5_${id}_$dateModified", null) ?: return null
+        val parts = raw.split("|")
+        if (parts.size != 2) return null
+        val size = parts[1].toLongOrNull() ?: return null
+        return Pair(parts[0], size)
+    }
 
-    private fun putCachedMd5(id: Long, dateModified: Long, md5: String) {
-        md5Cache.edit().putString("md5_${id}_$dateModified", md5).apply()
+    private fun putCachedDigest(id: Long, dateModified: Long, md5: String, size: Long) {
+        md5Cache.edit().putString("md5_${id}_$dateModified", "$md5|$size").apply()
     }
 
     private var isUploading = false
@@ -319,43 +324,68 @@ class AlbumUploadManager(private val context: Context) {
     }
 
     /**
-     * 读取照片文件内容为字节数组
+     * 文件摘要（流式哈希结果）：MD5 + 真实字节数
      */
-    private suspend fun readPhotoData(photoInfo: PhotoInfo): ByteArray? = withContext(Dispatchers.IO) {
+    private data class FileDigest(val md5: String, val size: Long)
+
+    /**
+     * 流式计算文件 MD5（边读边 update，不整文件驻留内存），同时统计真实字节数。
+     * 用于替代原来的「整文件读入 + 全量 MD5」，避免大视频 OOM。
+     */
+    private suspend fun hashFileStreaming(photoInfo: PhotoInfo): FileDigest? = withContext(Dispatchers.IO) {
         try {
-            val contentUri = Uri.parse(photoInfo.uri)
-            val inputStream: InputStream? = context.contentResolver.openInputStream(contentUri)
-            if (inputStream == null) {
-                Log.e(TAG, "Failed to open InputStream for uri=${photoInfo.uri}")
-                return@withContext null
-            }
-
-            inputStream.use { stream ->
-                val buffer = ByteArrayOutputStream()
-                val data = ByteArray(8192)
-                var bytesRead: Int
-
-                while (stream.read(data).also { bytesRead = it } != -1) {
-                    buffer.write(data, 0, bytesRead)
+            val inputStream = context.contentResolver.openInputStream(Uri.parse(photoInfo.uri))
+                ?: run {
+                    Log.e(TAG, "Failed to open InputStream for uri=${photoInfo.uri}")
+                    return@withContext null
                 }
-
-                val fileData = buffer.toByteArray()
-                Log.i(TAG, "Read ${fileData.size} bytes from photo: ${photoInfo.name}")
-                return@withContext fileData
+            inputStream.use { stream ->
+                val md = MessageDigest.getInstance("MD5")
+                val buf = ByteArray(64 * 1024)
+                var total = 0L
+                var n: Int
+                while (stream.read(buf).also { n = it } != -1) {
+                    md.update(buf, 0, n)
+                    total += n
+                }
+                FileDigest(md.digest().joinToString("") { "%02x".format(it) }, total)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to read photo data: ${photoInfo.name}", e)
-            return@withContext null
+            Log.e(TAG, "Streaming hash failed: ${photoInfo.name}", e)
+            null
         }
     }
 
     /**
-     * 计算字节数组的 MD5 哈希值
+     * 按需读取指定偏移的一段分片数据（O(1) seek，不整文件驻留内存）
+     * @param startOffset 起始偏移
+     * @param length 读取长度（字节）
      */
-    private fun calculateMD5(data: ByteArray): String {
-        val md = MessageDigest.getInstance("MD5")
-        val digest = md.digest(data)
-        return digest.joinToString("") { "%02x".format(it) }
+    private suspend fun readChunkAt(photoInfo: PhotoInfo, startOffset: Long, length: Int): ByteArray? = withContext(Dispatchers.IO) {
+        try {
+            val pfd = context.contentResolver.openFileDescriptor(Uri.parse(photoInfo.uri), "r")
+                ?: run {
+                    Log.e(TAG, "Failed to open FileDescriptor for uri=${photoInfo.uri}")
+                    return@withContext null
+                }
+            pfd.use {
+                val fis = FileInputStream(it.fileDescriptor)
+                fis.channel.position(startOffset)
+                val out = ByteArrayOutputStream()
+                val buf = ByteArray(64 * 1024)
+                var remaining = length
+                while (remaining > 0) {
+                    val n = fis.read(buf, 0, minOf(buf.size, remaining))
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    remaining -= n
+                }
+                out.toByteArray()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Read chunk failed: ${photoInfo.name}", e)
+            null
+        }
     }
 
     /**
@@ -486,9 +516,12 @@ class AlbumUploadManager(private val context: Context) {
     }
 
     /**
-     * 上传分片到服务器
+     * 上传单个分片到服务器
      * @param baseUrl 服务器基础URL
-     * @param fileData 文件数据字节数组
+     * @param chunkData 分片字节（调用方已按 offset 读取，不再持有整文件）
+     * @param startOffset 分片起始偏移
+     * @param endOffset 分片结束偏移
+     * @param totalSize 文件总大小（用于 Content-Range 与日志）
      * @param chunkIndex 分片索引
      * @param totalChunks 总分片数
      * @param fileId 文件ID
@@ -496,37 +529,30 @@ class AlbumUploadManager(private val context: Context) {
      */
     private suspend fun uploadChunk(
         baseUrl: String,
-        fileData: ByteArray,
+        chunkData: ByteArray,
         startOffset: Long,
         endOffset: Long,
+        totalSize: Long,
         chunkIndex: Int,
         totalChunks: Int,
         fileId: String
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            if (startOffset >= fileData.size) {
+            if (chunkData.isEmpty()) {
                 return@withContext true // 没有数据需要上传
             }
 
-            val safeEndOffset = minOf(endOffset, fileData.size.toLong() - 1)
-            if (safeEndOffset < startOffset) {
-                Log.e(TAG, "Invalid chunk range: startOffset=$startOffset, endOffset=$endOffset, fileSize=${fileData.size}")
-                return@withContext false
-            }
-
-            val chunkData = fileData.copyOfRange(startOffset.toInt(), safeEndOffset.toInt() + 1)
-            
             val url = "$baseUrl/api/upload"
             Log.d(
                 TAG,
-                "Chunk upload request: url=$url, fileId=$fileId, chunkIndex=$chunkIndex/$totalChunks, range=$startOffset-$safeEndOffset/${fileData.size}, bytes=${chunkData.size}"
+                "Chunk upload request: url=$url, fileId=$fileId, chunkIndex=$chunkIndex/$totalChunks, range=$startOffset-$endOffset/$totalSize, bytes=${chunkData.size}"
             )
             val request = Request.Builder()
                 .url(url)
                 .post(chunkData.toRequestBody("application/octet-stream".toMediaType()))
                 .addHeader("X-File-ID", fileId)
                 .addHeader("X-Start-Offset", startOffset.toString())
-                .addHeader("Content-Range", "bytes $startOffset-$safeEndOffset/${fileData.size}")
+                .addHeader("Content-Range", "bytes $startOffset-$endOffset/$totalSize")
                 .build()
 
             okHttpClient.newCall(request).execute().use { response ->
@@ -590,24 +616,24 @@ class AlbumUploadManager(private val context: Context) {
         progressCallback?.invoke(photoInfo, 0f, UploadStatus.Uploading, totalFiles, currentFileIndex)
 
         try {
-            // 1. 读取照片数据
-            val fileData = readPhotoData(photoInfo)
-            if (fileData == null || fileData.isEmpty()) {
-                Log.e(TAG, "File data is empty: ${photoInfo.name}")
+            // 1. 计算 MD5（流式，带本地缓存：文件未变则复用，避免重传重复扫全量）
+            val digest = getCachedDigest(photoInfo.id, photoInfo.dateModified)?.let { (md5, size) ->
+                FileDigest(md5, size)
+            } ?: hashFileStreaming(photoInfo)
+            if (digest == null || digest.size <= 0) {
+                Log.e(TAG, "File data is empty or hash failed: ${photoInfo.name}")
                 progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("File data is empty"), totalFiles, currentFileIndex)
                 return@withContext false
             }
-
-            // 2. 计算MD5（带本地缓存：照片未变则跳过全量哈希）
-            val md5Hash = getCachedMd5(photoInfo.id, photoInfo.dateModified) ?: run {
-                val computed = calculateMD5(fileData)
-                putCachedMd5(photoInfo.id, photoInfo.dateModified, computed)
-                computed
+            val md5Hash = digest.md5
+            val totalSize = digest.size
+            if (getCachedDigest(photoInfo.id, photoInfo.dateModified) == null) {
+                putCachedDigest(photoInfo.id, photoInfo.dateModified, md5Hash, totalSize)
             }
-            Log.d(TAG, "File MD5: baseUrl=$baseUrl, filename=${photoInfo.name}, md5=$md5Hash")
+            Log.d(TAG, "File MD5: baseUrl=$baseUrl, filename=${photoInfo.name}, md5=$md5Hash, size=$totalSize")
 
-            // 3. 提交元数据（包含去重检查）
-            val metadata = submitMetadata(baseUrl, photoInfo.name, fileData.size.toLong(), md5Hash)
+            // 2. 提交元数据（包含去重检查）
+            val metadata = submitMetadata(baseUrl, photoInfo.name, totalSize, md5Hash)
             if (metadata == null) {
                 Log.w(TAG, "Metadata submission failed. Will retry: ${photoInfo.name}")
                 progressCallback?.invoke(photoInfo, 0f, UploadStatus.Uploading, totalFiles, currentFileIndex)
@@ -624,7 +650,7 @@ class AlbumUploadManager(private val context: Context) {
                 Log.i(TAG, "文件已存在，跳过上传（MD5去重）")
                 Log.i(TAG, "  当前文件名: ${photoInfo.name}")
                 Log.i(TAG, "  当前文件MD5: $md5Hash")
-                Log.i(TAG, "  当前文件大小: ${fileData.size} bytes")
+                Log.i(TAG, "  当前文件大小: $totalSize bytes")
                 Log.i(TAG, "  服务端文件ID: $existingFileId")
                 Log.i(TAG, "  服务端文件名: $existingFilename")
                 Log.i(TAG, "  服务端文件MD5: $existingChecksum")
@@ -684,15 +710,24 @@ class AlbumUploadManager(private val context: Context) {
                         return@withContext false
                     }
 
-                    val uploadSuccess = uploadChunk(
-                        baseUrl = baseUrl,
-                        fileData = fileData,
-                        startOffset = chunkRange.startOffset,
-                        endOffset = chunkRange.endOffset,
-                        chunkIndex = chunkIndex,
-                        totalChunks = totalChunks,
-                        fileId = fileId
-                    )
+                    // 按需读取该分片字节（不整文件驻留内存，避免大视频 OOM）
+                    val chunkLength = (chunkRange.endOffset - chunkRange.startOffset + 1).toInt()
+                    val chunkData = readChunkAt(photoInfo, chunkRange.startOffset, chunkLength)
+                    val uploadSuccess = if (chunkData == null) {
+                        Log.e(TAG, "Failed to read chunk at offset ${chunkRange.startOffset}: ${photoInfo.name}")
+                        false
+                    } else {
+                        uploadChunk(
+                            baseUrl = baseUrl,
+                            chunkData = chunkData,
+                            startOffset = chunkRange.startOffset,
+                            endOffset = chunkRange.endOffset,
+                            totalSize = totalSize,
+                            chunkIndex = chunkIndex,
+                            totalChunks = totalChunks,
+                            fileId = fileId
+                        )
+                    }
                     if (uploadSuccess) break
 
                     Log.w(TAG, "Chunk upload failed. Will retry after ${UPLOAD_RETRY_DELAY_MS}ms. chunkIndex=$chunkIndex, file=${photoInfo.name}")
@@ -707,7 +742,7 @@ class AlbumUploadManager(private val context: Context) {
 
             Log.i(TAG, "══════════════════════════════════════════════════════════════")
             Log.i(TAG, "文件上传完成: ${photoInfo.name}")
-            Log.i(TAG, "  文件大小: ${fileData.size} bytes")
+            Log.i(TAG, "  文件大小: $totalSize bytes")
             Log.i(TAG, "  文件MD5: $md5Hash")
             Log.i(TAG, "  服务端文件ID: $fileId")
             Log.i(TAG, "  分片数量: $totalChunks")
