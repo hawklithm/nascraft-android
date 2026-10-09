@@ -3,9 +3,12 @@ package com.hawky.nascraft
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -28,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Description
@@ -52,6 +56,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -66,6 +71,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -263,7 +269,7 @@ fun UploadedFilesScreen(
         modifier = Modifier
             .fillMaxSize()
     ) {
-        // 统计信息
+        // 统计信息与过滤工具栏
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -272,120 +278,112 @@ fun UploadedFilesScreen(
                 containerColor = MaterialTheme.colorScheme.secondaryContainer
             )
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(16.dp)
             ) {
-                Row {
-                    Column {
-                        Text(
-                            text = "总文件数",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                // 第一行：统计信息 + 视图切换/刷新
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        StatBlock(
+                            label = "总文件数",
+                            value = "$totalFiles",
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
                         )
-                        Text(
-                            text = "$totalFiles",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
+                        Spacer(modifier = Modifier.width(32.dp))
+                        StatBlock(
+                            label = "当前显示",
+                            value = "${uploadedFiles.size}",
                             color = MaterialTheme.colorScheme.onSecondaryContainer
                         )
                     }
-                    Spacer(modifier = Modifier.width(32.dp))
-                    Column {
-                        Text(
-                            text = "当前显示",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
-                        )
-                        Text(
-                            text = "${uploadedFiles.size}",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = {
+                                viewMode = if (viewMode == ViewMode.LIST) ViewMode.GRID else ViewMode.LIST
+                            }
+                        ) {
+                            Icon(
+                                imageVector = if (viewMode == ViewMode.LIST) Icons.Default.GridView else Icons.AutoMirrored.Filled.List,
+                                contentDescription = if (viewMode == ViewMode.LIST) "切换为网格视图" else "切换为列表视图"
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                coroutineScope.launch { loadFiles(refresh = true) }
+                            },
+                            enabled = !isLoading
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                        }
                     }
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box {
-                        IconButton(onClick = { showSourceFilter = true }) {
-                            Icon(Icons.Default.FilterAlt, contentDescription = "按来源筛选")
-                        }
-                        DropdownMenu(
-                            expanded = showSourceFilter,
-                            onDismissRequest = { showSourceFilter = false }
-                        ) {
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 第二行：过滤条件（横向滚动，避免拥挤）
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterDropdownButton(
+                        label = sourceFilter?.let { "来源 · $it" } ?: "来源 · 全部",
+                        icon = Icons.Default.FilterAlt,
+                        expanded = showSourceFilter,
+                        onToggle = { showSourceFilter = true },
+                        onDismiss = { showSourceFilter = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("全部来源") },
+                            onClick = { applySourceFilter(null) },
+                            trailingIcon = {
+                                if (sourceFilter == null) {
+                                    Icon(Icons.Default.Check, contentDescription = "已选中")
+                                }
+                            }
+                        )
+                        availableSources.forEach { source ->
                             DropdownMenuItem(
-                                text = { Text("全部来源") },
-                                onClick = { applySourceFilter(null) },
+                                text = { Text(source) },
+                                onClick = { applySourceFilter(source) },
                                 trailingIcon = {
-                                    if (sourceFilter == null) {
+                                    if (sourceFilter == source) {
                                         Icon(Icons.Default.Check, contentDescription = "已选中")
                                     }
                                 }
                             )
-                            availableSources.forEach { source ->
-                                DropdownMenuItem(
-                                    text = { Text(source) },
-                                    onClick = { applySourceFilter(source) },
-                                    trailingIcon = {
-                                        if (sourceFilter == source) {
-                                            Icon(Icons.Default.Check, contentDescription = "已选中")
-                                        }
-                                    }
-                                )
-                            }
                         }
                     }
-                    Box {
-                        IconButton(onClick = { showMediaTypeFilter = true }) {
-                            Icon(Icons.Default.Movie, contentDescription = "按媒体类型筛选")
-                        }
-                        DropdownMenu(
-                            expanded = showMediaTypeFilter,
-                            onDismissRequest = { showMediaTypeFilter = false }
-                        ) {
-                            MediaTypeFilterItem("全部", null, mediaTypeFilter, applyMediaTypeFilter)
-                            MediaTypeFilterItem("图片", "image", mediaTypeFilter, applyMediaTypeFilter)
-                            MediaTypeFilterItem("视频", "video", mediaTypeFilter, applyMediaTypeFilter)
-                            MediaTypeFilterItem("其他", "other", mediaTypeFilter, applyMediaTypeFilter)
-                        }
-                    }
-                    Box {
-                        IconButton(onClick = { showSortMenu = true }) {
-                            Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "排序")
-                        }
-                        DropdownMenu(
-                            expanded = showSortMenu,
-                            onDismissRequest = { showSortMenu = false }
-                        ) {
-                            SortOptionItem("上传时间 · 最新在前", "id", "desc", sortBy, order, applySort)
-                            SortOptionItem("上传时间 · 最早在前", "id", "asc", sortBy, order, applySort)
-                            SortOptionItem("拍摄时间 · 最新在前", "taken_at", "desc", sortBy, order, applySort)
-                            SortOptionItem("拍摄时间 · 最早在前", "taken_at", "asc", sortBy, order, applySort)
-                        }
-                    }
-                    IconButton(
-                        onClick = {
-                            viewMode = if (viewMode == ViewMode.LIST) ViewMode.GRID else ViewMode.LIST
-                        }
+                    FilterDropdownButton(
+                        label = "类型 · ${mediaTypeLabel(mediaTypeFilter)}",
+                        icon = Icons.Default.Movie,
+                        expanded = showMediaTypeFilter,
+                        onToggle = { showMediaTypeFilter = true },
+                        onDismiss = { showMediaTypeFilter = false }
                     ) {
-                        Icon(
-                            imageVector = if (viewMode == ViewMode.LIST) Icons.Default.GridView else Icons.AutoMirrored.Filled.List,
-                            contentDescription = if (viewMode == ViewMode.LIST) "切换为网格视图" else "切换为列表视图"
-                        )
+                        MediaTypeFilterItem("全部", null, mediaTypeFilter, applyMediaTypeFilter)
+                        MediaTypeFilterItem("图片", "image", mediaTypeFilter, applyMediaTypeFilter)
+                        MediaTypeFilterItem("视频", "video", mediaTypeFilter, applyMediaTypeFilter)
+                        MediaTypeFilterItem("其他", "other", mediaTypeFilter, applyMediaTypeFilter)
                     }
-                    IconButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                loadFiles(refresh = true)
-                            }
-                        },
-                        enabled = !isLoading
+                    FilterDropdownButton(
+                        label = "排序 · ${sortLabel(sortBy, order)}",
+                        icon = Icons.AutoMirrored.Filled.Sort,
+                        expanded = showSortMenu,
+                        onToggle = { showSortMenu = true },
+                        onDismiss = { showSortMenu = false }
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                        SortOptionItem("上传时间 · 最新在前", "id", "desc", sortBy, order, applySort)
+                        SortOptionItem("上传时间 · 最早在前", "id", "asc", sortBy, order, applySort)
+                        SortOptionItem("拍摄时间 · 最新在前", "taken_at", "desc", sortBy, order, applySort)
+                        SortOptionItem("拍摄时间 · 最早在前", "taken_at", "asc", sortBy, order, applySort)
                     }
                 }
             }
@@ -1141,4 +1139,85 @@ fun SortOptionItem(
             }
         }
     )
+}
+
+/**
+ * 统计信息块（标签 + 数值）
+ */
+@Composable
+private fun StatBlock(label: String, value: String, color: Color) {
+    Column {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = color.copy(alpha = 0.7f)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            color = color
+        )
+    }
+}
+
+/**
+ * 过滤条件下拉按钮：带图标 + 当前值文字 + 下拉箭头，点击弹出菜单
+ */
+@Composable
+private fun FilterDropdownButton(
+    label: String,
+    icon: ImageVector,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onDismiss: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Box {
+        OutlinedButton(
+            onClick = onToggle,
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                horizontal = 12.dp,
+                vertical = 8.dp
+            )
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Icon(
+                Icons.Default.ArrowDropDown,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+            content()
+        }
+    }
+}
+
+/**
+ * 媒体类型筛选值 → 中文标签
+ */
+private fun mediaTypeLabel(type: String?): String = when (type) {
+    "image" -> "图片"
+    "video" -> "视频"
+    "other" -> "其他"
+    else -> "全部"
+}
+
+/**
+ * 排序键 → 简短中文标签
+ */
+private fun sortLabel(by: String, order: String): String = when {
+    by == "id" && order == "desc" -> "最新上传"
+    by == "id" && order == "asc" -> "最早上传"
+    by == "taken_at" && order == "desc" -> "最新拍摄"
+    by == "taken_at" && order == "asc" -> "最早拍摄"
+    else -> "默认"
 }
