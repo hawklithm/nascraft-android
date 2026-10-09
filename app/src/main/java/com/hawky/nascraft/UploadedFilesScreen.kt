@@ -104,11 +104,11 @@ fun UploadedFilesScreen(
     var hasMore by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    // Image preview state - for swipeable gallery
+    // Image preview state - for swipeable gallery（仅图片可全屏预览，视频不进图片预览）
     var showImagePreview by remember { mutableStateOf(false) }
     var initialPreviewIndex by remember { mutableIntStateOf(0) }
     val previewableFiles = remember(uploadedFiles) {
-        uploadedFiles.filter { !it.thumbnailUrl.isNullOrEmpty() }
+        uploadedFiles.filter { isImageFile(it.filename) && !it.thumbnailUrl.isNullOrEmpty() }
     }
 
     // DLNA cast state
@@ -953,8 +953,13 @@ fun FileDetailSheet(
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            // 大图
-            val fullImageUrl = "$baseUrl/api/download/${file.fileId}"
+            // 大图：图片用原图（高清预览），视频用第一帧缩略图
+            val isImage = isImageFile(file.filename)
+            val previewImageUrl = if (isImage) {
+                "$baseUrl/api/download/${file.fileId}"
+            } else {
+                file.thumbnailUrl?.let { "$baseUrl$it" }
+            }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -963,9 +968,9 @@ fun FileDetailSheet(
                     .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
             ) {
-                if (file.thumbnailUrl != null || isImageFile(file.filename)) {
+                if (previewImageUrl != null) {
                     AsyncImage(
-                        model = fullImageUrl,
+                        model = previewImageUrl,
                         contentDescription = file.filename,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1018,7 +1023,7 @@ fun FileDetailSheet(
                         Text("投屏到电视")
                     }
                 }
-                if (onPreviewClick != null && file.thumbnailUrl != null) {
+                if (onPreviewClick != null && isImageFile(file.filename) && file.thumbnailUrl != null) {
                     Button(
                         onClick = onPreviewClick,
                         modifier = Modifier.weight(1f),
