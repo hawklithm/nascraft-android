@@ -81,6 +81,8 @@ dependencies {
     // Image loading with Coil for Jetpack Compose - v2.x for better mirror compatibility
     implementation("io.coil-kt:coil-compose:2.4.0")
     implementation("io.coil-kt:coil:2.4.0")
+    // 视频首帧缩略图（本地相册视频格子）
+    implementation("io.coil-kt:coil-video:2.4.0")
 
     // Testing
     testImplementation(libs.junit)

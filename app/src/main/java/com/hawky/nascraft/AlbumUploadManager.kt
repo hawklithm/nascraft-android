@@ -88,22 +88,24 @@ class AlbumUploadManager(private val context: Context) {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    /** MD5 本地缓存：key = photo.id + dateModified；文件未变则复用，避免重复全量哈希。
-     *  value = "md5|size"，同时缓存字节数，避免缓存命中时还得再扫一遍取大小 */
+    /** MD5 本地缓存：key = photo.uri；文件未变则复用，避免重复全量哈希。
+     *  value = "md5|size"，同时缓存字节数，避免缓存命中时还得再扫一遍取大小。
+     *  注意：key 必须用 uri 而非 id+dateModified——图片/视频的 MediaStore _ID 是各自独立的
+     *  命名空间（都从 1 起），若用 id 做 key，图片 id=N 与视频 id=N 会碰撞，导致误读对方 MD5。 */
     private val md5Cache by lazy {
         context.getSharedPreferences("nascraft_md5_cache", Context.MODE_PRIVATE)
     }
 
-    private fun getCachedDigest(id: Long, dateModified: Long): Pair<String, Long>? {
-        val raw = md5Cache.getString("md5_${id}_$dateModified", null) ?: return null
+    private fun getCachedDigest(uri: String): Pair<String, Long>? {
+        val raw = md5Cache.getString("md5_$uri", null) ?: return null
         val parts = raw.split("|")
         if (parts.size != 2) return null
         val size = parts[1].toLongOrNull() ?: return null
         return Pair(parts[0], size)
     }
 
-    private fun putCachedDigest(id: Long, dateModified: Long, md5: String, size: Long) {
-        md5Cache.edit().putString("md5_${id}_$dateModified", "$md5|$size").apply()
+    private fun putCachedDigest(uri: String, md5: String, size: Long) {
+        md5Cache.edit().putString("md5_$uri", "$md5|$size").apply()
     }
 
     private var isUploading = false
@@ -326,7 +328,21 @@ class AlbumUploadManager(private val context: Context) {
     /**
      * 文件摘要（流式哈希结果）：MD5 + 真实字节数
      */
-    private data class FileDigest(val md5: String, val size: Long)
+    data class FileDigest(val md5: String, val size: Long)
+
+    /**
+     * 获取文件摘要（MD5 + 真实字节数），带本地缓存：
+     * 缓存命中直接复用，未命中则流式哈希并写入缓存。
+     * 供上传流程与「本地相册」已上传判定共用，保证两处 MD5 一致。
+     */
+    suspend fun getFileDigest(photoInfo: PhotoInfo): FileDigest? {
+        getCachedDigest(photoInfo.uri)?.let { (md5, size) ->
+            return FileDigest(md5, size)
+        }
+        val digest = hashFileStreaming(photoInfo) ?: return null
+        putCachedDigest(photoInfo.uri, digest.md5, digest.size)
+        return digest
+    }
 
     /**
      * 流式计算文件 MD5（边读边 update，不整文件驻留内存），同时统计真实字节数。
@@ -617,9 +633,7 @@ class AlbumUploadManager(private val context: Context) {
 
         try {
             // 1. 计算 MD5（流式，带本地缓存：文件未变则复用，避免重传重复扫全量）
-            val digest = getCachedDigest(photoInfo.id, photoInfo.dateModified)?.let { (md5, size) ->
-                FileDigest(md5, size)
-            } ?: hashFileStreaming(photoInfo)
+            val digest = getFileDigest(photoInfo)
             if (digest == null || digest.size <= 0) {
                 Log.e(TAG, "File data is empty or hash failed: ${photoInfo.name}")
                 progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed("File data is empty"), totalFiles, currentFileIndex)
@@ -627,9 +641,6 @@ class AlbumUploadManager(private val context: Context) {
             }
             val md5Hash = digest.md5
             val totalSize = digest.size
-            if (getCachedDigest(photoInfo.id, photoInfo.dateModified) == null) {
-                putCachedDigest(photoInfo.id, photoInfo.dateModified, md5Hash, totalSize)
-            }
             Log.d(TAG, "File MD5: baseUrl=$baseUrl, filename=${photoInfo.name}, md5=$md5Hash, size=$totalSize")
 
             // 2. 提交元数据（包含去重检查）

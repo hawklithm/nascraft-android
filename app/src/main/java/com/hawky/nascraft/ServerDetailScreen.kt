@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
  */
 enum class PageNav {
     UPLOAD,
+    LOCAL_ALBUM,
     FILES,
     DLNA
 }
@@ -128,14 +129,22 @@ fun ServerDetailScreen(
                     selected = selectedTab == 1,
                     onClick = {
                         selectedTab = 1
-                        currentPage = PageNav.FILES
+                        currentPage = PageNav.LOCAL_ALBUM
                     },
-                    text = { Text("已上传文件") }
+                    text = { Text("本地相册") }
                 )
                 Tab(
                     selected = selectedTab == 2,
                     onClick = {
                         selectedTab = 2
+                        currentPage = PageNav.FILES
+                    },
+                    text = { Text("云端相册") }
+                )
+                Tab(
+                    selected = selectedTab == 3,
+                    onClick = {
+                        selectedTab = 3
                         currentPage = PageNav.DLNA
                     },
                     text = { Text("DLNA投屏") }
@@ -156,6 +165,13 @@ fun ServerDetailScreen(
                             onStopUpload = onStopUpload,
                             onTogglePause = onTogglePause,
                             onUploadMediaTypeChange = onUploadMediaTypeChange
+                        )
+                    }
+                    PageNav.LOCAL_ALBUM -> {
+                        LocalAlbumScreen(
+                            albumUploadManager = albumUploadManager,
+                            fileUploadManager = fileUploadManager,
+                            server = server
                         )
                     }
                     PageNav.FILES -> {
