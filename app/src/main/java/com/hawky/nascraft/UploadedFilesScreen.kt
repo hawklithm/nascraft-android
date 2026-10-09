@@ -143,7 +143,12 @@ fun UploadedFilesScreen(
             if (refresh) {
                 uploadedFiles = response.files
             } else {
-                uploadedFiles = uploadedFiles + response.files
+                // 按 fileId 去重：排序字段（拍摄时间 taken_at）在后台异步解析期间会持续变化，
+                // 分页结果可能发生漂移，后端返回的下一页里可能包含已在列表中的文件，
+                // 去重避免 LazyColumn/LazyGrid 的 item key 冲突崩溃（"Key was already used"）
+                val existingIds = uploadedFiles.mapTo(HashSet()) { it.fileId }
+                val newFiles = response.files.filter { it.fileId !in existingIds }
+                uploadedFiles = uploadedFiles + newFiles
             }
             totalFiles = response.totalFiles
             hasMore = uploadedFiles.size < totalFiles && response.files.isNotEmpty()
