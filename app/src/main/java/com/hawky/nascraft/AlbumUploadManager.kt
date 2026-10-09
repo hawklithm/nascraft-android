@@ -309,6 +309,8 @@ class AlbumUploadManager(private val context: Context) {
             json.put("filename", filename)
             json.put("total_size", totalSize)
             json.put("checksum", md5Hash)
+            // 上传来源设备（厂商 + 型号，如 "Xiaomi 14 Pro"）
+            json.put("source_device", "${Build.MANUFACTURER} ${Build.MODEL}".trim())
             // 可选字段 description
             if (description.isNotEmpty()) {
                 json.put("description", description)

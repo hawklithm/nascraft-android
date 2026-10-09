@@ -18,7 +18,9 @@ data class UploadedFile(
     val status: Int,
     val filePath: String,
     val lastUpdated: Long,
-    val thumbnailUrl: String?
+    val thumbnailUrl: String?,
+    val takenAt: Long = 0,
+    val sourceDevice: String? = null
 ) {
     companion object {
         private const val TAG = "UploadedFile"
@@ -61,13 +63,25 @@ class FileUploadManager(private val context: android.content.Context) {
         baseUrl: String,
         page: Int = 1,
         pageSize: Int = DEFAULT_PAGE_SIZE,
-        status: Int? = null
+        status: Int? = null,
+        sortBy: String? = null,
+        order: String? = null,
+        sourceDevice: String? = null
     ): UploadedFilesResponse? {
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val url = StringBuilder("$baseUrl/api/uploaded_files?page=$page&page_size=$pageSize")
                 status?.let {
                     url.append("&status=$it")
+                }
+                sortBy?.let {
+                    url.append("&sort_by=$it")
+                }
+                order?.let {
+                    url.append("&order=$it")
+                }
+                sourceDevice?.let {
+                    url.append("&source_device=").append(java.net.URLEncoder.encode(it, "UTF-8"))
                 }
 
                 Log.d(TAG, "Fetching uploaded files: url=$url")
@@ -95,6 +109,47 @@ class FileUploadManager(private val context: android.content.Context) {
             } catch (e: Exception) {
                 Log.e(TAG, "Error fetching uploaded files", e)
                 return@withContext null
+            }
+        }
+    }
+
+    /**
+     * 获取所有来源设备列表（用于来源筛选器）
+     */
+    suspend fun getSources(baseUrl: String): List<String>? {
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val url = "$baseUrl/api/uploaded_files/sources"
+                val request = Request.Builder()
+                    .url(url)
+                    .get()
+                    .build()
+
+                okHttpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        Log.e(TAG, "Failed to fetch sources: HTTP ${response.code}")
+                        return@withContext null
+                    }
+                    val body = response.body?.string()
+                    if (body == null) {
+                        Log.e(TAG, "Empty response body for sources")
+                        return@withContext null
+                    }
+                    val root = JSONObject(body)
+                    if (root.optInt("status", -1) != 1 || root.optString("code", "-1") != "0") {
+                        return@withContext null
+                    }
+                    val data = root.optJSONObject("data") ?: return@withContext emptyList()
+                    val arr = data.optJSONArray("sources") ?: return@withContext emptyList()
+                    val list = mutableListOf<String>()
+                    for (i in 0 until arr.length()) {
+                        list.add(arr.getString(i))
+                    }
+                    list
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error fetching sources", e)
+                null
             }
         }
     }
@@ -135,6 +190,12 @@ class FileUploadManager(private val context: android.content.Context) {
                     lastUpdated = fileObj.getLong("last_updated"),
                     thumbnailUrl = if (fileObj.has("thumbnail_url") && !fileObj.isNull("thumbnail_url")) {
                         fileObj.getString("thumbnail_url")
+                    } else {
+                        null
+                    },
+                    takenAt = fileObj.optLong("taken_at", 0L),
+                    sourceDevice = if (fileObj.has("source_device") && !fileObj.isNull("source_device")) {
+                        fileObj.getString("source_device")
                     } else {
                         null
                     }

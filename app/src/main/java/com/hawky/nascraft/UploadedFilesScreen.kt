@@ -27,8 +27,11 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Refresh
@@ -41,6 +44,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -109,6 +114,16 @@ fun UploadedFilesScreen(
     var viewMode by remember { mutableStateOf(ViewMode.LIST) }
     var selectedFileForDetail by remember { mutableStateOf<UploadedFile?>(null) }
 
+    // 排序状态：sortBy = "id"(上传时间) | "taken_at"(拍摄时间)
+    var sortBy by remember { mutableStateOf("id") }
+    var order by remember { mutableStateOf("asc") }
+    var showSortMenu by remember { mutableStateOf(false) }
+
+    // 来源筛选状态
+    var sourceFilter by remember { mutableStateOf<String?>(null) }
+    var availableSources by remember { mutableStateOf<List<String>>(emptyList()) }
+    var showSourceFilter by remember { mutableStateOf(false) }
+
     // 加载数据
     suspend fun loadFiles(refresh: Boolean = false) {
         if (refresh) {
@@ -122,7 +137,7 @@ fun UploadedFilesScreen(
         errorMessage = null
 
         val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
-        val response = fileUploadManager.getUploadedFiles(baseUrl, page = currentPage, pageSize = 20)
+        val response = fileUploadManager.getUploadedFiles(baseUrl, page = currentPage, pageSize = 20, sortBy = sortBy, order = order, sourceDevice = sourceFilter)
 
         if (response != null) {
             if (refresh) {
@@ -170,6 +185,7 @@ fun UploadedFilesScreen(
     // 初始加载
     LaunchedEffect(Unit) {
         loadFiles(refresh = true)
+        fileUploadManager.getSources(baseUrl)?.let { availableSources = it }
     }
 
     // 打开投屏设备选择
@@ -194,6 +210,25 @@ fun UploadedFilesScreen(
         if (index >= 0) {
             initialPreviewIndex = index
             showImagePreview = true
+        }
+    }
+
+    // 应用排序方式并刷新
+    val applySort: (String, String) -> Unit = { by, ord ->
+        showSortMenu = false
+        if (sortBy != by || order != ord) {
+            sortBy = by
+            order = ord
+            coroutineScope.launch { loadFiles(refresh = true) }
+        }
+    }
+
+    // 应用来源筛选并刷新（source == null 表示全部）
+    val applySourceFilter: (String?) -> Unit = { source ->
+        showSourceFilter = false
+        if (sourceFilter != source) {
+            sourceFilter = source
+            coroutineScope.launch { loadFiles(refresh = true) }
         }
     }
 
@@ -247,6 +282,50 @@ fun UploadedFilesScreen(
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box {
+                        IconButton(onClick = { showSourceFilter = true }) {
+                            Icon(Icons.Default.FilterAlt, contentDescription = "按来源筛选")
+                        }
+                        DropdownMenu(
+                            expanded = showSourceFilter,
+                            onDismissRequest = { showSourceFilter = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("全部来源") },
+                                onClick = { applySourceFilter(null) },
+                                trailingIcon = {
+                                    if (sourceFilter == null) {
+                                        Icon(Icons.Default.Check, contentDescription = "已选中")
+                                    }
+                                }
+                            )
+                            availableSources.forEach { source ->
+                                DropdownMenuItem(
+                                    text = { Text(source) },
+                                    onClick = { applySourceFilter(source) },
+                                    trailingIcon = {
+                                        if (sourceFilter == source) {
+                                            Icon(Icons.Default.Check, contentDescription = "已选中")
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Box {
+                        IconButton(onClick = { showSortMenu = true }) {
+                            Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "排序")
+                        }
+                        DropdownMenu(
+                            expanded = showSortMenu,
+                            onDismissRequest = { showSortMenu = false }
+                        ) {
+                            SortOptionItem("上传时间 · 最新在前", "id", "desc", sortBy, order, applySort)
+                            SortOptionItem("上传时间 · 最早在前", "id", "asc", sortBy, order, applySort)
+                            SortOptionItem("拍摄时间 · 最新在前", "taken_at", "desc", sortBy, order, applySort)
+                            SortOptionItem("拍摄时间 · 最早在前", "taken_at", "asc", sortBy, order, applySort)
+                        }
+                    }
                     IconButton(
                         onClick = {
                             viewMode = if (viewMode == ViewMode.LIST) ViewMode.GRID else ViewMode.LIST
@@ -878,6 +957,12 @@ fun FileDetailSheet(
             DetailRow("状态", fileUploadManager.getStatusText(file.status))
             DetailRow("MD5", file.checksum)
             DetailRow("上传时间", fileUploadManager.formatTimestamp(file.lastUpdated))
+            if (file.takenAt > 0) {
+                DetailRow("拍摄时间", fileUploadManager.formatTimestamp(file.takenAt))
+            }
+            if (!file.sourceDevice.isNullOrEmpty()) {
+                DetailRow("来源", file.sourceDevice)
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -959,4 +1044,33 @@ fun LoadingMoreIndicator() {
             Text("加载更多...")
         }
     }
+}
+
+/**
+ * 排序菜单项（带当前选中高亮）
+ */
+@Composable
+fun SortOptionItem(
+    label: String,
+    by: String,
+    ord: String,
+    currentBy: String,
+    currentOrder: String,
+    onClick: (String, String) -> Unit
+) {
+    val selected = currentBy == by && currentOrder == ord
+    DropdownMenuItem(
+        text = {
+            Text(
+                text = label,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+            )
+        },
+        onClick = { onClick(by, ord) },
+        trailingIcon = {
+            if (selected) {
+                Icon(Icons.Default.Check, contentDescription = "已选中")
+            }
+        }
+    )
 }
