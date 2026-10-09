@@ -1,5 +1,6 @@
 package com.hawky.nascraft
 
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -56,6 +57,8 @@ import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.decode.VideoFrameDecoder
 import kotlinx.coroutines.launch
+
+private const val TAG = "LocalAlbumScreen"
 
 /** 本地相册：按上传状态筛选 */
 enum class UploadFilter { ALL, UPLOADED, NOT_UPLOADED }
@@ -134,19 +137,35 @@ fun LocalAlbumScreen(
         )?.files?.map { it.checksum }?.toSet() ?: emptySet()
 
         // 3. 逐个计算本地文件 MD5（带缓存），命中云端 checksum 即视为已上传。
+        //    同时统计每个 MD5 对应的本地文件，用于定位「内容重复导致去重跳过」的文件。
         //    分批刷新 state（每 20 个），避免 3500+ 次逐条重组拖慢 UI。
         val uploaded = mutableSetOf<String>()
+        val md5ToFiles = mutableMapOf<String, MutableList<String>>() // md5 -> 本地文件名列表
         var processed = 0
         for (photo in photos) {
             val digest = albumUploadManager.getFileDigest(photo)
-            if (digest != null && digest.md5 in checksums) {
-                uploaded.add(photo.uri)
+            if (digest != null) {
+                // 记录文件名（DISPLAY_NAME 可能为空，为空则回退到 uri），保证日志能定位到具体文件
+                md5ToFiles.getOrPut(digest.md5) { mutableListOf() }
+                    .add(photo.name.ifBlank { photo.uri })
+                if (digest.md5 in checksums) {
+                    uploaded.add(photo.uri)
+                }
             }
             processed++
             if (processed % 20 == 0 || processed == photos.size) {
                 uploadedUris = uploaded.toSet()
                 hashingCount = processed
             }
+        }
+
+        // 输出内容重复（同一 MD5 被多个本地文件共享）的文件：
+        // 这些文件里，只有第一个上传成功，其余在上传时因 MD5 命中云端被去重跳过。
+        md5ToFiles.filterValues { it.size >= 2 }.forEach { (md5, names) ->
+            Log.w(
+                TAG,
+                "本地存在内容重复的文件（MD5 相同，上传时会被去重跳过）: md5=$md5, 数量=${names.size}, 文件=${names.joinToString(" / ")}"
+            )
         }
 
         isLoading = false
