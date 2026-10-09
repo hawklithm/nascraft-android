@@ -303,12 +303,6 @@ fun UploadedFilesScreen(
                             value = fileUploadManager.formatFileSize(totalSize),
                             color = MaterialTheme.colorScheme.onSecondaryContainer
                         )
-                        Spacer(modifier = Modifier.width(32.dp))
-                        StatBlock(
-                            label = "当前显示",
-                            value = "${uploadedFiles.size}",
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(
