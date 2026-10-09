@@ -32,6 +32,7 @@ data class UploadedFile(
  */
 data class UploadedFilesResponse(
     val totalFiles: Int,
+    val totalSize: Long,
     val files: List<UploadedFile>
 )
 
@@ -183,6 +184,7 @@ class FileUploadManager(private val context: android.content.Context) {
             }
 
             val totalFiles = data.getInt("total_files")
+            val totalSize = data.optLong("total_size", 0L)
             val filesArray = data.getJSONArray("files")
             val files = mutableListOf<UploadedFile>()
 
@@ -211,7 +213,7 @@ class FileUploadManager(private val context: android.content.Context) {
                 files.add(file)
             }
 
-            UploadedFilesResponse(totalFiles = totalFiles, files = files)
+            UploadedFilesResponse(totalFiles = totalFiles, totalSize = totalSize, files = files)
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing uploaded files response", e)
             null

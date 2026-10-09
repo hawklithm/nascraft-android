@@ -100,6 +100,7 @@ fun UploadedFilesScreen(
     var isLoading by remember { mutableStateOf(true) }
     var uploadedFiles by remember { mutableStateOf<List<UploadedFile>>(emptyList()) }
     var totalFiles by remember { mutableIntStateOf(0) }
+    var totalSize by remember { mutableStateOf(0L) }
     var currentPage by remember { mutableIntStateOf(1) }
     var hasMore by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -170,6 +171,7 @@ fun UploadedFilesScreen(
                 uploadedFiles = uploadedFiles + newFiles
             }
             totalFiles = response.totalFiles
+            totalSize = response.totalSize
             hasMore = uploadedFiles.size < totalFiles && response.files.isNotEmpty()
             currentPage++
         } else {
@@ -293,6 +295,12 @@ fun UploadedFilesScreen(
                         StatBlock(
                             label = "总文件数",
                             value = "$totalFiles",
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                        Spacer(modifier = Modifier.width(32.dp))
+                        StatBlock(
+                            label = "总大小",
+                            value = fileUploadManager.formatFileSize(totalSize),
                             color = MaterialTheme.colorScheme.onSecondaryContainer
                         )
                         Spacer(modifier = Modifier.width(32.dp))
