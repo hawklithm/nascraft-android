@@ -34,12 +34,14 @@ import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import coil.compose.AsyncImage
 import com.google.accompanist.pager.ExperimentalPagerApi
 import com.google.accompanist.pager.HorizontalPager
@@ -57,6 +59,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -78,6 +81,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import android.widget.Toast
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
@@ -136,6 +140,9 @@ fun UploadedFilesScreen(
     var mediaTypeFilter by remember { mutableStateOf<String?>(null) }
     var showMediaTypeFilter by remember { mutableStateOf(false) }
 
+    // 文件名搜索关键词（空串/纯空白表示不过滤）
+    var searchQuery by remember { mutableStateOf("") }
+
     // 加载数据
     suspend fun loadFiles(refresh: Boolean = false) {
         if (refresh) {
@@ -156,7 +163,8 @@ fun UploadedFilesScreen(
             sortBy = sortBy,
             order = order,
             sourceDevice = sourceFilter,
-            mediaType = mediaTypeFilter
+            mediaType = mediaTypeFilter,
+            filename = searchQuery.trim().ifBlank { null }
         )
 
         if (response != null) {
@@ -208,10 +216,15 @@ fun UploadedFilesScreen(
             }
     }
 
-    // 初始加载
+    // 初始加载来源列表
     LaunchedEffect(Unit) {
-        loadFiles(refresh = true)
         fileUploadManager.getSources(baseUrl)?.let { availableSources = it }
+    }
+
+    // 文件名搜索防抖：输入停止 400ms 后自动刷新（兼作初始加载）
+    LaunchedEffect(searchQuery) {
+        delay(400)
+        loadFiles(refresh = true)
     }
 
     // 打开投屏设备选择
@@ -325,6 +338,27 @@ fun UploadedFilesScreen(
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 文件名搜索框（输入停止后自动检索）
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("按文件名搜索") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = "搜索")
+                    },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Default.Clear, contentDescription = "清除")
+                            }
+                        }
+                    },
+                    singleLine = true
+                )
 
                 Spacer(modifier = Modifier.height(12.dp))
 

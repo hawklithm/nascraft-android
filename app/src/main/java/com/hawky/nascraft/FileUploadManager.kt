@@ -62,6 +62,7 @@ class FileUploadManager(private val context: android.content.Context) {
      * @param order 排序方向，asc/desc
      * @param sourceDevice 来源设备过滤，null表示不过滤
      * @param mediaType 媒体类型过滤，image/video/other，null表示不过滤
+     * @param filename 文件名关键词模糊搜索，null或空白表示不过滤
      * @return UploadedFilesResponse 文件列表响应
      */
     suspend fun getUploadedFiles(
@@ -72,7 +73,8 @@ class FileUploadManager(private val context: android.content.Context) {
         sortBy: String? = null,
         order: String? = null,
         sourceDevice: String? = null,
-        mediaType: String? = null
+        mediaType: String? = null,
+        filename: String? = null
     ): UploadedFilesResponse? {
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
@@ -91,6 +93,9 @@ class FileUploadManager(private val context: android.content.Context) {
                 }
                 mediaType?.let {
                     url.append("&media_type=").append(java.net.URLEncoder.encode(it, "UTF-8"))
+                }
+                filename?.takeIf { it.isNotBlank() }?.let {
+                    url.append("&filename=").append(java.net.URLEncoder.encode(it.trim(), "UTF-8"))
                 }
 
                 Log.d(TAG, "Fetching uploaded files: url=$url")
