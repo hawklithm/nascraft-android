@@ -80,7 +80,7 @@ fun LocalAlbumScreen(
     fileUploadManager: FileUploadManager,
     server: DiscoveredServer
 ) {
-    val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
+    val baseUrl = server.apiBaseUrl()
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
     // 视频首帧缩略图专用 ImageLoader（注册 VideoFrameDecoder，用 MediaMetadataRetriever 提取视频帧）

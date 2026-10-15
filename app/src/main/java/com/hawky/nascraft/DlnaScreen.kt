@@ -63,7 +63,7 @@ fun DlnaScreen(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
+    val baseUrl = server.apiBaseUrl()
 
     var isLoading by remember { mutableStateOf(true) }
     var renderers by remember { mutableStateOf<List<Pair<DlnaRenderer, PlaybackInfo>>>(emptyList()) }

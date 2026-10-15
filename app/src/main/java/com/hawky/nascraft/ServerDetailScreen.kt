@@ -66,6 +66,8 @@ fun ServerDetailScreen(
     server: DiscoveredServer,
     albumUploadManager: AlbumUploadManager,
     fileUploadManager: FileUploadManager,
+    nativeBusiness: NativeBusinessClient? = null,
+    downloadResumeManager: DownloadResumeManager? = null,
     uploadStates: Map<String, UploadState>,
     isUploadPaused: Boolean = false,
     selectedUploadMediaType: UploadMediaType = UploadMediaType.ALL,
@@ -79,7 +81,17 @@ fun ServerDetailScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
 
     // 创建 DLNA 管理器实例
-    val dlnaManager = remember { DlnaManager() }
+    val dlnaManager = remember(nativeBusiness) { DlnaManager(nativeBusiness) }
+    var apiRealm by remember(nativeBusiness) {
+        mutableStateOf(nativeBusiness?.currentRealm() ?: ApiRealm.LAN_NATIVE)
+    }
+
+    LaunchedEffect(nativeBusiness, server.configuredApiOrigin) {
+        if (nativeBusiness?.isRealmConfigured(ApiRealm.REMOTE_API) != true) {
+            apiRealm = ApiRealm.LAN_NATIVE
+            nativeBusiness?.setRealm(ApiRealm.LAN_NATIVE)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -92,7 +104,7 @@ fun ServerDetailScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "${server.ip.hostAddress}:${server.port}",
+                            text = "${server.displayEndpoint()}:${server.port}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
                         )
@@ -151,6 +163,33 @@ fun ServerDetailScreen(
                 )
             }
 
+            if (nativeBusiness != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FilterChip(
+                        selected = apiRealm == ApiRealm.LAN_NATIVE,
+                        onClick = {
+                            apiRealm = ApiRealm.LAN_NATIVE
+                            nativeBusiness.setRealm(apiRealm)
+                        },
+                        label = { Text("LAN HTTPS") },
+                    )
+                    FilterChip(
+                        selected = apiRealm == ApiRealm.REMOTE_API,
+                        onClick = {
+                            apiRealm = ApiRealm.REMOTE_API
+                            nativeBusiness.setRealm(apiRealm)
+                        },
+                        label = { Text("Tailscale HTTPS") },
+                        enabled = nativeBusiness.isRealmConfigured(ApiRealm.REMOTE_API),
+                    )
+                    Text("同一服务器身份", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+
             // 内容区域
             Box(modifier = Modifier.fillMaxSize()) {
                 when (currentPage) {
@@ -178,7 +217,9 @@ fun ServerDetailScreen(
                         UploadedFilesScreen(
                             fileUploadManager = fileUploadManager,
                             dlnaManager = dlnaManager,
-                            server = server
+                            server = server,
+                            nativeBusiness = nativeBusiness,
+                            downloadResumeManager = downloadResumeManager,
                         )
                     }
                     PageNav.DLNA -> {
@@ -235,7 +276,7 @@ fun UploadContent(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 ServerInfoRow("名称", server.name)
-                ServerInfoRow("IP地址", server.ip.hostAddress ?: "")
+                ServerInfoRow("服务器域名", server.displayEndpoint())
                 ServerInfoRow("端口", server.port.toString())
                 ServerInfoRow("协议", server.proto)
             }

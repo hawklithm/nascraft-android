@@ -7,7 +7,6 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
-import android.util.Base64
 import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
@@ -17,18 +16,11 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.asRequestBody
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.security.MessageDigest
-import java.util.concurrent.TimeUnit
 
 /**
  * 上传媒体类型
@@ -75,18 +67,15 @@ typealias UploadProgressCallback = (photoInfo: PhotoInfo, progress: Float, statu
  * Android 相册上传管理器
  * 负责权限检查、相册查询和照片上传
  */
-class AlbumUploadManager(private val context: Context) {
+class AlbumUploadManager(
+    private val context: Context,
+    private val nativeBusiness: NativeBusinessClient? = null,
+) {
     companion object {
         private const val TAG = "AlbumUploadManager"
         private const val UPLOAD_RETRY_DELAY_MS = 2000L
         private const val PARALLEL_UPLOADS = 5 // 同时并行上传的文件数
     }
-
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .build()
 
     /** MD5 本地缓存：key = photo.uri；文件未变则复用，避免重复全量哈希。
      *  value = "md5|size"，同时缓存字节数，避免缓存命中时还得再扫一遍取大小。
@@ -108,8 +97,12 @@ class AlbumUploadManager(private val context: Context) {
         md5Cache.edit().putString("md5_$uri", "$md5|$size").apply()
     }
 
-    private var isUploading = false
-    private var shouldStop = false
+    fun clearSensitiveLocalCache() {
+        md5Cache.edit().clear().apply()
+    }
+
+    @Volatile private var isUploading = false
+    @Volatile private var shouldStop = false
     @Volatile
     private var isPaused = false
     private var uploadJob: Job? = null
@@ -140,11 +133,8 @@ class AlbumUploadManager(private val context: Context) {
             // Android 11-12 (API 30-32)
             arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
         } else {
-            // Android 10及以下
-            arrayOf(
-                android.Manifest.permission.READ_EXTERNAL_STORAGE,
-                android.Manifest.permission.WRITE_EXTERNAL_STORAGE
-            )
+            // Reading the user's media does not require write access to shared storage.
+            arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
         }
     }
 
@@ -406,7 +396,7 @@ class AlbumUploadManager(private val context: Context) {
 
     /**
      * 提交文件元数据到服务器
-     * @param baseUrl 服务器基础URL (例如 "http://192.168.1.100:8080")
+     * @param baseUrl 当前配置的固定 HTTPS API Origin（业务请求本身由 NativeBusinessClient 签名发送）
      * @param filename 文件名
      * @param totalSize 文件总大小
      * @param md5Hash MD5哈希值
@@ -421,12 +411,8 @@ class AlbumUploadManager(private val context: Context) {
         description: String = ""
     ): Map<String, Any>? = withContext(Dispatchers.IO) {
         try {
-            val url = "$baseUrl/api/submit_metadata"
-            Log.i(TAG, "提交文件元数据到服务端（检查是否已上传）")
-            Log.d(TAG, "  URL: $url")
-            Log.d(TAG, "  文件名: $filename")
-            Log.d(TAG, "  文件大小: $totalSize bytes")
-            Log.d(TAG, "  文件MD5: $md5Hash")
+            if (nativeBusiness == null) return@withContext null
+            Log.i(TAG, "提交文件元数据到已认证的 NASCraft 服务")
             val json = JSONObject()
             json.put("filename", filename)
             json.put("total_size", totalSize)
@@ -438,39 +424,20 @@ class AlbumUploadManager(private val context: Context) {
                 json.put("description", description)
             }
 
-            val request = Request.Builder()
-                .url(url)
-                .post(json.toString().toRequestBody("application/json".toMediaType()))
-                .build()
-
-            okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    val body = response.body?.string()
-                    Log.e(TAG, "Metadata request failed: url=$url, HTTP ${response.code}, body=${body?.take(500)}")
-                    return@withContext null
-                }
-
-                val responseBody = response.body?.string()
-                Log.d(TAG, "Metadata response: url=$url, body=${responseBody?.take(1000)}")
-
-                if (responseBody == null) {
-                    Log.e(TAG, "Empty response body: url=$url")
-                    return@withContext null
-                }
+            val response = nativeBusiness.jsonSelected("POST", "/api/submit_metadata", json.toString())
+            val responseBody = response.body.toString(Charsets.UTF_8)
 
                 val root = JSONObject(responseBody)
                 val status = root.optInt("status", -1)
                 val code = root.optString("code", "-1")
-                val message = root.optString("message", "")
-                
                 if (status != 1 || code != "0") {
-                    Log.e(TAG, "Server returned error: url=$url, status=$status, code=$code, message=$message, raw=${responseBody.take(500)}")
+                    Log.w(TAG, "Metadata API returned a non-success response")
                     return@withContext null
                 }
 
                 val data = root.optJSONObject("data")
                 if (data == null) {
-                    Log.e(TAG, "Missing 'data' field in response: url=$url, raw=${responseBody.take(500)}")
+                    Log.w(TAG, "Metadata API returned an incomplete response")
                     return@withContext null
                 }
 
@@ -486,7 +453,7 @@ class AlbumUploadManager(private val context: Context) {
                     result["checksum"] = data.optString("checksum", "")
                     result["file_path"] = data.optString("file_path", "")
                     result["total_size"] = data.optLong("total_size", 0)
-                    Log.i(TAG, "检测到文件已存在（服务端返回skipped=true）: filename=$filename, md5=$md5Hash")
+                    Log.i(TAG, "Server reported an existing file; upload body was skipped")
                     return@withContext result
                 }
                 
@@ -522,11 +489,11 @@ class AlbumUploadManager(private val context: Context) {
                 }
                 result["uploaded_offsets"] = uploadedOffsets
 
-                Log.i(TAG, "Metadata parsed: url=$url, fileId=$fileId, totalChunks=$totalChunks, skipped=false, resumableChunks=${uploadedOffsets.size}")
+                Log.i(TAG, "Upload metadata accepted; resumable chunks=${uploadedOffsets.size}")
                 return@withContext result
-            }
         } catch (e: Exception) {
-            Log.e(TAG, "Error while submitting metadata: baseUrl=$baseUrl, filename=$filename", e)
+            stopOnRevokedAuth(e)
+            Log.w(TAG, "Secure metadata request did not complete")
             return@withContext null
         }
     }
@@ -558,53 +525,30 @@ class AlbumUploadManager(private val context: Context) {
                 return@withContext true // 没有数据需要上传
             }
 
-            val url = "$baseUrl/api/upload"
-            Log.d(
-                TAG,
-                "Chunk upload request: url=$url, fileId=$fileId, chunkIndex=$chunkIndex/$totalChunks, range=$startOffset-$endOffset/$totalSize, bytes=${chunkData.size}"
+            if (nativeBusiness == null) return@withContext false
+            val response = nativeBusiness.requestSelected(
+                "POST",
+                "/api/upload",
+                body = chunkData,
+                contentType = "application/octet-stream",
+                additionalHeaders = mapOf(
+                    "X-File-ID" to fileId,
+                    "X-Start-Offset" to startOffset.toString(),
+                    "Content-Range" to "bytes $startOffset-$endOffset/$totalSize",
+                ),
             )
-            val request = Request.Builder()
-                .url(url)
-                .post(chunkData.toRequestBody("application/octet-stream".toMediaType()))
-                .addHeader("X-File-ID", fileId)
-                .addHeader("X-Start-Offset", startOffset.toString())
-                .addHeader("Content-Range", "bytes $startOffset-$endOffset/$totalSize")
-                .build()
-
-            okHttpClient.newCall(request).execute().use { response ->
-                val responseBody = response.body?.string()
-                if (!response.isSuccessful) {
-                    Log.e(TAG, "Chunk upload failed: url=$url, fileId=$fileId, chunkIndex=$chunkIndex, HTTP ${response.code}, body=${responseBody?.take(500)}")
-                    return@withContext false
-                }
-                
-                // 解析JSON响应并检查status和code字段
-                try {
-                    if (responseBody != null && responseBody.isNotEmpty()) {
-                        val root = JSONObject(responseBody)
-                        val status = root.optInt("status", -1)
-                        val code = root.optString("code", "-1")
-                        val message = root.optString("message", "")
-                        
-                        if (status != 1 || code != "0") {
-                            Log.e(TAG, "Chunk upload server error: url=$url, fileId=$fileId, chunkIndex=$chunkIndex, status=$status, code=$code, message=$message")
-                            return@withContext false
-                        }
-                        // 成功
-                        Log.d(TAG, "Chunk uploaded: url=$url, fileId=$fileId, chunkIndex=$chunkIndex")
-                        return@withContext true
-                    } else {
-                        // 空响应体，假设成功（可能某些实现返回空）
-                        Log.d(TAG, "Chunk uploaded (empty response): url=$url, fileId=$fileId, chunkIndex=$chunkIndex")
-                        return@withContext true
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to parse chunk upload response: url=$url, fileId=$fileId, chunkIndex=$chunkIndex, body=${responseBody?.take(500)}", e)
-                    return@withContext false
-                }
+            val responseBody = response.body.toString(Charsets.UTF_8)
+            if (responseBody.isEmpty()) return@withContext true
+            val root = JSONObject(responseBody)
+            if (root.optInt("status", -1) != 1 || root.optString("code", "-1") != "0") {
+                Log.w(TAG, "Chunk upload API returned a non-success response")
+                return@withContext false
             }
+            Log.d(TAG, "Upload chunk accepted")
+            return@withContext true
         } catch (e: Exception) {
-            Log.e(TAG, "Error while uploading chunk: baseUrl=$baseUrl, fileId=$fileId, chunkIndex=$chunkIndex/$totalChunks", e)
+            stopOnRevokedAuth(e)
+            Log.w(TAG, "Secure chunk request did not complete")
             return@withContext false
         }
     }
@@ -626,7 +570,6 @@ class AlbumUploadManager(private val context: Context) {
         Log.i(TAG, "══════════════════════════════════════════════════════════════")
         Log.i(TAG, "开始上传文件: ${photoInfo.name} (${currentFileIndex ?: "?"}/${totalFiles ?: "?"})")
         Log.i(TAG, "  文件大小: ${photoInfo.size} bytes")
-        Log.i(TAG, "  服务器地址: $baseUrl")
         Log.i(TAG, "══════════════════════════════════════════════════════════════")
 
         progressCallback?.invoke(photoInfo, 0f, UploadStatus.Uploading, totalFiles, currentFileIndex)
@@ -641,7 +584,6 @@ class AlbumUploadManager(private val context: Context) {
             }
             val md5Hash = digest.md5
             val totalSize = digest.size
-            Log.d(TAG, "File MD5: baseUrl=$baseUrl, filename=${photoInfo.name}, md5=$md5Hash, size=$totalSize")
 
             // 2. 提交元数据（包含去重检查）
             val metadata = submitMetadata(baseUrl, photoInfo.name, totalSize, md5Hash)
@@ -762,7 +704,8 @@ class AlbumUploadManager(private val context: Context) {
             return@withContext true
 
         } catch (e: Exception) {
-            Log.e(TAG, "File upload failed: baseUrl=$baseUrl, filename=${photoInfo.name}", e)
+            stopOnRevokedAuth(e)
+            Log.w(TAG, "Secure album upload did not complete")
             progressCallback?.invoke(photoInfo, 0f, UploadStatus.Failed(e.message ?: "Unknown error"), totalFiles, currentFileIndex)
             return@withContext false
         }
@@ -784,7 +727,18 @@ class AlbumUploadManager(private val context: Context) {
             return
         }
 
-        Log.i(TAG, "startAlbumUpload: baseUrl=$baseUrl, mediaType=$mediaType")
+        Log.i(TAG, "startAlbumUpload: mediaType=$mediaType")
+
+        if (nativeBusiness?.hasAuthenticatedSession() != true) {
+            progressCallback?.invoke(
+                PhotoInfo(0, "", "", "", 0, 0, 0, 0, 0, 0),
+                0f,
+                UploadStatus.Failed("Configure and authenticate a server before uploading"),
+                null,
+                null,
+            )
+            return
+        }
 
         if (!hasRequiredPermissions()) {
             Log.e(TAG, "Missing required permissions. Cannot access album photos.")
@@ -926,4 +880,15 @@ class AlbumUploadManager(private val context: Context) {
      * 检查是否正在上传
      */
     fun isUploading(): Boolean = isUploading
+
+    private fun stopOnRevokedAuth(failure: Exception) {
+        if (failure is NativeApiException &&
+            (failure.httpStatus == 401 || failure.apiCode?.let { it in setOf(
+                "AUTH_NOT_AVAILABLE", "AUTH_REQUIRED", "SESSION_EXPIRED", "NONCE_REQUIRED", "AUTH_REVOKED",
+                "DEVICE_REVOKED", "INSTALLATION_REVOKED", "ACCOUNT_DISABLED", "SESSION_REVOKED",
+            ) } == true)) {
+            shouldStop = true
+            isUploading = false
+        }
+    }
 }

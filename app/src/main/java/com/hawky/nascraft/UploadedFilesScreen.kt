@@ -42,7 +42,6 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import coil.compose.AsyncImage
 import com.google.accompanist.pager.ExperimentalPagerApi
 import com.google.accompanist.pager.HorizontalPager
 import com.google.accompanist.pager.rememberPagerState
@@ -62,6 +61,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -81,6 +81,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import android.widget.Toast
+import android.provider.DocumentsContract
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -93,13 +96,15 @@ import kotlinx.coroutines.launch
 fun UploadedFilesScreen(
     fileUploadManager: FileUploadManager,
     dlnaManager: DlnaManager,
-    server: DiscoveredServer
+    server: DiscoveredServer,
+    nativeBusiness: NativeBusinessClient? = null,
+    downloadResumeManager: DownloadResumeManager? = null,
 ) {
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
-    val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
+    val baseUrl = server.apiBaseUrl()
 
     var isLoading by remember { mutableStateOf(true) }
     var uploadedFiles by remember { mutableStateOf<List<UploadedFile>>(emptyList()) }
@@ -125,6 +130,44 @@ fun UploadedFilesScreen(
     // 展示方式与详情浮层状态
     var viewMode by remember { mutableStateOf(ViewMode.LIST) }
     var selectedFileForDetail by remember { mutableStateOf<UploadedFile?>(null) }
+    var pendingExportTaskId by remember { mutableStateOf<String?>(null) }
+    val downloadTasksState = if (downloadResumeManager != null) {
+        downloadResumeManager.tasks.collectAsState()
+    } else {
+        remember { mutableStateOf(emptyList()) }
+    }
+    val currentDownloadIdentity = nativeBusiness?.downloadIdentityOrNull()
+    val visibleDownloadTasks = downloadTasksState.value.filter {
+        currentDownloadIdentity != null && it.identity == currentDownloadIdentity
+    }
+
+    val createDownloadDocument = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("*/*"),
+    ) { uri ->
+        val taskId = pendingExportTaskId
+        pendingExportTaskId = null
+        val identity = nativeBusiness?.downloadIdentityOrNull()
+        val manager = downloadResumeManager
+        if (uri != null && taskId != null && identity != null && manager != null) {
+            coroutineScope.launch {
+                try {
+                    val output = context.contentResolver.openOutputStream(uri, "wt")
+                        ?: throw IllegalStateException("无法写入所选位置")
+                    manager.exportVerified(taskId, identity, output)
+                    Toast.makeText(context, "文件已保存", Toast.LENGTH_SHORT).show()
+                } catch (failure: Exception) {
+                    runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
+                    Toast.makeText(context, failure.message ?: "下载失败，请重试", Toast.LENGTH_LONG).show()
+                }
+            }
+        } else if (uri != null) {
+            // The user may have logged out or switched identity while the picker
+            // was open. Remove only the new picker-created target if the provider
+            // supports deletion; never leave an empty document looking complete.
+            runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
+            Toast.makeText(context, "登录状态已变化，已取消导出", Toast.LENGTH_LONG).show()
+        }
+    }
 
     // 排序状态：sortBy = "id"(上传时间) | "taken_at"(拍摄时间)
     var sortBy by remember { mutableStateOf("id") }
@@ -155,7 +198,7 @@ fun UploadedFilesScreen(
         isLoading = true
         errorMessage = null
 
-        val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
+        val baseUrl = server.apiBaseUrl()
         val response = fileUploadManager.getUploadedFiles(
             baseUrl,
             page = currentPage,
@@ -425,6 +468,33 @@ fun UploadedFilesScreen(
             }
         }
 
+        if (visibleDownloadTasks.isNotEmpty() && downloadResumeManager != null && currentDownloadIdentity != null) {
+            DownloadResumeTasks(
+                tasks = visibleDownloadTasks,
+                manager = downloadResumeManager,
+                identity = currentDownloadIdentity,
+                onResume = { task ->
+                    coroutineScope.launch {
+                        runCatching { downloadResumeManager.resumeNow(task.taskId, currentDownloadIdentity) }
+                            .onFailure { Toast.makeText(context, it.message ?: "无法继续下载", Toast.LENGTH_LONG).show() }
+                    }
+                },
+                onRestart = { task ->
+                    coroutineScope.launch {
+                        runCatching {
+                            downloadResumeManager.restart(task.taskId, currentDownloadIdentity)
+                            downloadResumeManager.resumeNow(task.taskId, currentDownloadIdentity)
+                        }.onFailure { Toast.makeText(context, it.message ?: "无法重新下载", Toast.LENGTH_LONG).show() }
+                    }
+                },
+                onCancel = { task -> downloadResumeManager.cancel(task.taskId) },
+                onExport = { task ->
+                    pendingExportTaskId = task.taskId
+                    createDownloadDocument.launch(task.filename.ifBlank { "nascraft-download" })
+                },
+            )
+        }
+
         // 文件列表
         if (errorMessage != null) {
             Box(
@@ -494,6 +564,7 @@ fun UploadedFilesScreen(
                                 file = file,
                                 fileUploadManager = fileUploadManager,
                                 baseUrl = baseUrl,
+                                nativeBusiness = nativeBusiness,
                                 onPreviewClick = { openPreview(file) },
                                 onCastClick = { openCastSelection(it) }
                             )
@@ -526,6 +597,7 @@ fun UploadedFilesScreen(
                             GridImageCell(
                                 file = file,
                                 baseUrl = baseUrl,
+                                nativeBusiness = nativeBusiness,
                                 onClick = { selectedFileForDetail = file }
                             )
                         }
@@ -564,20 +636,19 @@ fun UploadedFilesScreen(
                             .padding(vertical = 16.dp)
                     ) { page ->
                         val file = previewableFiles[page]
-                        val fullImageUrl = "$baseUrl/api/download/${file.fileId}"
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(16.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            AsyncImage(
-                                model = fullImageUrl,
+                            NativeAuthenticatedImage(
+                                nativeBusiness = nativeBusiness,
+                                apiPath = safeDownloadApiPath(file.fileId),
                                 contentDescription = file.filename,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .align(Alignment.Center),
-                                alignment = Alignment.Center
                             )
                         }
                     }
@@ -701,15 +772,140 @@ fun UploadedFilesScreen(
                 file = detailFile,
                 baseUrl = baseUrl,
                 fileUploadManager = fileUploadManager,
+                nativeBusiness = nativeBusiness,
                 onCastClick = {
                     selectedFileForDetail = null
                     openCastSelection(detailFile)
                 },
                 onPreviewClick = { openPreview(detailFile) },
+                onDownloadClick = {
+                    val identity = nativeBusiness?.downloadIdentityOrNull()
+                    val manager = downloadResumeManager
+                    val apiPath = safeDownloadApiPath(detailFile.fileId)
+                    if (identity == null || manager == null || apiPath == null) {
+                        Toast.makeText(context, "请先连接并登录 NASCraft", Toast.LENGTH_LONG).show()
+                    } else {
+                        coroutineScope.launch {
+                            runCatching {
+                                val task = manager.createOrLoad(
+                                    identity,
+                                    detailFile.fileId,
+                                    detailFile.filename,
+                                    apiPath,
+                                    detailFile.totalSize,
+                                )
+                                when (task.status) {
+                                    DownloadTaskStatus.SOURCE_CHANGED -> Toast.makeText(context, "文件或授权信息已变化，请在下载任务中选择重新开始", Toast.LENGTH_LONG).show()
+                                    DownloadTaskStatus.READY_TO_EXPORT, DownloadTaskStatus.EXPORT_FAILED -> Toast.makeText(context, "下载已完成，请在下载任务中导出", Toast.LENGTH_SHORT).show()
+                                    DownloadTaskStatus.EXPORTED -> Toast.makeText(context, "该文件已导出；可清理本机暂存后重新下载", Toast.LENGTH_SHORT).show()
+                                    else -> manager.resumeNow(task.taskId, identity)
+                                }
+                            }.onFailure { Toast.makeText(context, it.message ?: "无法开始下载", Toast.LENGTH_LONG).show() }
+                        }
+                    }
+                    selectedFileForDetail = null
+                },
                 onDismiss = { selectedFileForDetail = null }
             )
         }
     }
+}
+
+@Composable
+private fun DownloadResumeTasks(
+    tasks: List<DownloadTask>,
+    manager: DownloadResumeManager,
+    identity: DownloadAuthorizationIdentity,
+    onResume: (DownloadTask) -> Unit,
+    onRestart: (DownloadTask) -> Unit,
+    onCancel: (DownloadTask) -> Unit,
+    onExport: (DownloadTask) -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("下载任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            tasks.forEach { task ->
+                if (task.identity == identity) {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(task.filename, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                            val total = task.totalSize
+                            Text(
+                                text = total?.let { "${formatDownloadBytes(task.committedBytes)} / ${formatDownloadBytes(it)} · ${downloadStatusText(task)}" }
+                                    ?: downloadStatusText(task),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (task.status == DownloadTaskStatus.DOWNLOADING || task.status == DownloadTaskStatus.EXPORTING) {
+                                androidx.compose.material3.LinearProgressIndicator(
+                                    progress = { if (task.status == DownloadTaskStatus.EXPORTING) 1f else task.progress },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                            task.lastError?.takeIf { task.status in setOf(DownloadTaskStatus.FAILED, DownloadTaskStatus.CORRUPT, DownloadTaskStatus.EXPORT_FAILED) }?.let {
+                                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                when (task.status) {
+                                    DownloadTaskStatus.DOWNLOADING -> OutlinedButton(onClick = { manager.pause(task.taskId) }) { Text("暂停") }
+                                    DownloadTaskStatus.SOURCE_CHANGED, DownloadTaskStatus.CORRUPT -> Button(onClick = { onRestart(task) }) { Text("重新开始") }
+                                    DownloadTaskStatus.READY_TO_EXPORT, DownloadTaskStatus.EXPORT_FAILED -> Button(onClick = { onExport(task) }) { Text("导出") }
+                                    DownloadTaskStatus.EXPORTING -> Unit
+                                    DownloadTaskStatus.EXPORTED -> Unit
+                                    else -> Button(onClick = { onResume(task) }) { Text("继续") }
+                                }
+                                if (task.status != DownloadTaskStatus.EXPORTED) {
+                                    OutlinedButton(onClick = { onCancel(task) }) { Text("取消") }
+                                } else {
+                                    OutlinedButton(onClick = { onCancel(task) }) { Text("清理暂存") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun downloadStatusText(task: DownloadTask): String = when (task.status) {
+    DownloadTaskStatus.PENDING -> "等待开始"
+    DownloadTaskStatus.DOWNLOADING -> "正在下载"
+    DownloadTaskStatus.PAUSED -> "已暂停，可继续"
+    DownloadTaskStatus.WAITING_FOR_SERVER -> "NAS 正在准备文件，可稍后继续"
+    DownloadTaskStatus.WAITING_FOR_AUTH -> "需要重新登录后继续"
+    DownloadTaskStatus.SOURCE_CHANGED -> "文件或授权已变化，需要重新开始"
+    DownloadTaskStatus.READY_TO_EXPORT -> "已校验，等待导出"
+    DownloadTaskStatus.EXPORTING -> "正在导出"
+    DownloadTaskStatus.EXPORTED -> "已导出"
+    DownloadTaskStatus.EXPORT_FAILED -> "导出失败，可重试"
+    DownloadTaskStatus.FAILED -> "下载失败，可继续"
+    DownloadTaskStatus.CORRUPT -> "暂存校验失败，需要重新开始"
+}
+
+private fun formatDownloadBytes(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    val units = listOf("KiB", "MiB", "GiB", "TiB")
+    var value = bytes.toDouble()
+    var unit = -1
+    while (value >= 1024 && unit < units.lastIndex) {
+        value /= 1024
+        unit++
+    }
+    return "%.1f %s".format(java.util.Locale.ROOT, value, units[unit])
 }
 
 /**
@@ -734,6 +930,7 @@ fun FileCard(
     file: UploadedFile,
     fileUploadManager: FileUploadManager,
     baseUrl: String,
+    nativeBusiness: NativeBusinessClient? = null,
     onPreviewClick: () -> Unit,
     onCastClick: (UploadedFile) -> Unit
 ) {
@@ -769,18 +966,14 @@ fun FileCard(
                         ),
                     contentAlignment = Alignment.Center
                 ) {
-                    val thumbnailFullUrl = if (file.thumbnailUrl != null) {
-                        "$baseUrl${file.thumbnailUrl}"
-                    } else {
-                        null
-                    }
+                    val thumbnailPath = safeThumbnailApiPath(file.thumbnailUrl)
 
-                    if (!thumbnailFullUrl.isNullOrEmpty()) {
-                        AsyncImage(
-                            model = thumbnailFullUrl,
+                    if (!thumbnailPath.isNullOrEmpty()) {
+                        NativeAuthenticatedImage(
+                            nativeBusiness = nativeBusiness,
+                            apiPath = thumbnailPath,
                             contentDescription = null,
                             modifier = Modifier.fillMaxSize(),
-                            alignment = Alignment.Center
                         )
                     } else {
                         // Show generic icon when no thumbnail
@@ -940,9 +1133,10 @@ fun isImageFile(filename: String): Boolean {
 fun GridImageCell(
     file: UploadedFile,
     baseUrl: String,
+    nativeBusiness: NativeBusinessClient? = null,
     onClick: () -> Unit
 ) {
-    val thumbnailFullUrl = if (file.thumbnailUrl != null) "$baseUrl${file.thumbnailUrl}" else null
+    val thumbnailPath = safeThumbnailApiPath(file.thumbnailUrl)
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -952,9 +1146,10 @@ fun GridImageCell(
             .clickable { onClick() },
         contentAlignment = Alignment.Center
     ) {
-        if (!thumbnailFullUrl.isNullOrEmpty()) {
-            AsyncImage(
-                model = thumbnailFullUrl,
+        if (!thumbnailPath.isNullOrEmpty()) {
+            NativeAuthenticatedImage(
+                nativeBusiness = nativeBusiness,
+                apiPath = thumbnailPath,
                 contentDescription = file.filename,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
@@ -979,8 +1174,10 @@ fun FileDetailSheet(
     file: UploadedFile,
     baseUrl: String,
     fileUploadManager: FileUploadManager,
+    nativeBusiness: NativeBusinessClient? = null,
     onCastClick: () -> Unit,
     onPreviewClick: (() -> Unit)?,
+    onDownloadClick: () -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -991,10 +1188,10 @@ fun FileDetailSheet(
         ) {
             // 大图：图片用原图（高清预览），视频用第一帧缩略图
             val isImage = isImageFile(file.filename)
-            val previewImageUrl = if (isImage) {
-                "$baseUrl/api/download/${file.fileId}"
+            val previewImagePath = if (isImage) {
+                safeDownloadApiPath(file.fileId)
             } else {
-                file.thumbnailUrl?.let { "$baseUrl$it" }
+                safeThumbnailApiPath(file.thumbnailUrl)
             }
             Box(
                 modifier = Modifier
@@ -1004,9 +1201,10 @@ fun FileDetailSheet(
                     .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
             ) {
-                if (previewImageUrl != null) {
-                    AsyncImage(
-                        model = previewImageUrl,
+                if (previewImagePath != null) {
+                    NativeAuthenticatedImage(
+                        nativeBusiness = nativeBusiness,
+                        apiPath = previewImagePath,
                         contentDescription = file.filename,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1070,6 +1268,14 @@ fun FileDetailSheet(
                         Text("预览")
                     }
                 }
+            }
+
+            OutlinedButton(
+                onClick = onDownloadClick,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = file.status == 2,
+            ) {
+                Text("下载到设备…")
             }
 
             Spacer(modifier = Modifier.height(16.dp))

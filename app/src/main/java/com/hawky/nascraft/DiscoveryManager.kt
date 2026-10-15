@@ -14,8 +14,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import org.json.JSONObject
 import java.net.InetSocketAddress
 import java.net.DatagramPacket
@@ -25,7 +23,6 @@ import java.net.URI
 import java.net.NetworkInterface
 import java.net.InterfaceAddress
 import java.net.MulticastSocket
-import java.util.concurrent.TimeUnit
 
 /**
  * 表示一个被发现的服务端实例
@@ -35,7 +32,10 @@ data class DiscoveredServer(
     val ip: InetAddress,
     val port: Int,
     val proto: String,
-    val rawResponse: String
+    val rawResponse: String,
+    /** Set only from a validated, fixed HTTPS profile; never populated from LAN discovery. */
+    val configuredApiOrigin: String? = null,
+    val displayHost: String? = null,
 )
 
 /**
@@ -63,8 +63,6 @@ class DiscoveryManager(private val context: Context) {
         // 历史服务器连接超时（毫秒）
         private const val HISTORY_SERVER_TIMEOUT_MS = 1500L
 
-        private const val HELLO_PATH = "/api/hello"
-        private const val HELLO_TIMEOUT_MS = 1500L
 
         // 权限检查相关
         private const val INTERNET_PERMISSION = "android.permission.INTERNET"
@@ -118,12 +116,6 @@ class DiscoveryManager(private val context: Context) {
 
     private var discoveryJob: Job? = null
     private val discoveryScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    private val helloHttpClient = OkHttpClient.Builder()
-        .connectTimeout(HELLO_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        .readTimeout(HELLO_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        .writeTimeout(HELLO_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        .build()
 
     private val validationMutex = Mutex()
     private val validatingServerKeys = HashSet<String>()
@@ -338,11 +330,7 @@ class DiscoveryManager(private val context: Context) {
                 Log.d(TAG, "Received direct response: ${responseJson.take(200)}")
 
                 val server = parseResponse(responseJson, receivePacket.address)
-                if (server == null) {
-                    null
-                } else {
-                    if (validateServerHello(server)) server else null
-                }
+                server
             } finally {
                 socket.close()
             }
@@ -878,17 +866,13 @@ class DiscoveryManager(private val context: Context) {
             }
 
             try {
-                val ok = validateServerHello(server)
-                if (!ok) {
-                    Log.w(TAG, "Hello check failed, ignoring server: $key")
-                    return@launch
-                }
-
+                // Discovery only supplies an untrusted LAN address hint. It is never
+                // upgraded into a server identity or probed over cleartext HTTP.
                 validationMutex.withLock {
                     if (servers.none { s -> s.ip == server.ip && s.port == server.port && s.proto == server.proto }) {
                         servers.add(server)
                         _discoveredServers.value = servers.toList()
-                        Log.i(TAG, "Discovered server (hello ok): ${server.name} at $key")
+                        Log.i(TAG, "Discovered untrusted LAN hint: ${server.name} at $key")
                     }
                 }
             } finally {
@@ -896,36 +880,6 @@ class DiscoveryManager(private val context: Context) {
                     validatingServerKeys.remove(key)
                 }
             }
-        }
-    }
-
-    private suspend fun validateServerHello(server: DiscoveredServer): Boolean {
-        val baseUrl = serverKey(server)
-        val url = "$baseUrl$HELLO_PATH"
-        Log.d(TAG, "Checking server health: $url")
-
-        return try {
-            withTimeout(HELLO_TIMEOUT_MS) {
-                val request = Request.Builder()
-                    .url(url)
-                    .get()
-                    .build()
-
-                helloHttpClient.newCall(request).execute().use { response ->
-                    val ok = response.isSuccessful
-                    if (!ok) {
-                        val body = response.body?.string()
-                        Log.w(TAG, "Hello check HTTP ${response.code} from $url, body=${body?.take(200)}")
-                    }
-                    ok
-                }
-            }
-        } catch (e: TimeoutCancellationException) {
-            Log.w(TAG, "Hello check timeout: $url")
-            false
-        } catch (e: Exception) {
-            Log.w(TAG, "Hello check error: $url", e)
-            false
         }
     }
 

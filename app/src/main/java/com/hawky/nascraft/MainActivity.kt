@@ -1,9 +1,12 @@
 package com.hawky.nascraft
 
 import android.content.pm.PackageManager
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
+import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -34,6 +37,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -60,6 +64,13 @@ data class UploadState(
 
 class MainActivity : ComponentActivity() {
     private lateinit var discoveryManager: DiscoveryManager
+    private lateinit var deviceAuthRepository: DeviceAuthRepository
+    private lateinit var nativeAuthCoordinator: NativeAuthCoordinator
+    private lateinit var nativeBusinessClient: NativeBusinessClient
+    private lateinit var downloadResumeManager: DownloadResumeManager
+    private var authState by mutableStateOf(DeviceAuthState())
+    private var authStateRecoveryNotice by mutableStateOf<String?>(null)
+    private var appLinkReturnSignal by mutableIntStateOf(0)
     private lateinit var albumUploadManager: AlbumUploadManager
     private lateinit var fileUploadManager: FileUploadManager
 
@@ -73,6 +84,7 @@ class MainActivity : ComponentActivity() {
     private var selectedUploadMediaType by mutableStateOf(UploadMediaType.ALL)
     private var currentScreen by mutableStateOf<Screen>(Screen.DISCOVERY)
     private var connectedServer by mutableStateOf<DiscoveredServer?>(null)
+    private var showAuthenticatedHome by mutableStateOf(false)
 
     private var pendingUploadServer: DiscoveredServer? = null
     private val PERMISSION_REQUEST_CODE = 1001
@@ -86,55 +98,149 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         discoveryManager = DiscoveryManager(this)
-        albumUploadManager = AlbumUploadManager(this)
-        fileUploadManager = FileUploadManager(this)
-
-        // 不再在启动时自动开始服务发现，等待用户点击按钮
+        val keyStore = InstallationKeyStore()
+        deviceAuthRepository = DeviceAuthRepository(AndroidKeystoreDeviceAuthStore(this))
+        authState = try {
+            deviceAuthRepository.snapshot()
+        } catch (_: Exception) {
+            val reset = runCatching { deviceAuthRepository.resetSecureState() }.isSuccess
+            authStateRecoveryNotice = if (reset) {
+                "本机加密连接状态无法读取，已清除本地会话。请重新配置服务器并连接。"
+            } else {
+                "本机加密连接状态无法读取。请检查设备安全存储后重试。"
+            }
+            DeviceAuthState()
+        }
+        val authApi = NativeAuthApi(keyStore, deviceAuthRepository)
+        nativeBusinessClient = NativeBusinessClient(
+            authApi,
+            deviceAuthRepository,
+            refreshSession = { profile, realm -> nativeAuthCoordinator.refreshSession(profile, realm) },
+            onSessionRevoked = { identity ->
+                if (::downloadResumeManager.isInitialized) downloadResumeManager.clearIdentity(identity)
+            },
+            onSessionInvalidated = {
+                runOnUiThread {
+                    if (::albumUploadManager.isInitialized) {
+                        albumUploadManager.stopAlbumUpload()
+                        albumUploadManager.clearSensitiveLocalCache()
+                    }
+                    authState = runCatching { deviceAuthRepository.snapshot() }.getOrDefault(DeviceAuthState())
+                    showAuthenticatedHome = false
+                    connectedServer = null
+                }
+            },
+        )
+        downloadResumeManager = DownloadResumeManager(
+            DownloadResumeStore(File(noBackupFilesDir, "download-resume")),
+            nativeBusinessClient,
+        )
+        nativeAuthCoordinator = NativeAuthCoordinator(
+            keyStore,
+            deviceAuthRepository,
+            authApi,
+            onExplicitLogout = { session ->
+                if (session != null) {
+                    downloadResumeManager.clearIdentity(
+                        DownloadAuthorizationIdentity(session.serverId, session.userId, session.deviceId),
+                    )
+                } else {
+                    val snapshot = deviceAuthRepository.snapshot()
+                    val serverId = snapshot.selectedServerId
+                    val installationId = snapshot.installationId
+                    if (serverId != null && installationId != null) {
+                        downloadResumeManager.clearInstallation(serverId, installationId)
+                    }
+                }
+            },
+        )
+        albumUploadManager = AlbumUploadManager(this, nativeBusinessClient)
+        fileUploadManager = FileUploadManager(this, nativeBusinessClient)
+        if (isVerifiedAppReturn(intent)) appLinkReturnSignal = 1
 
         setContent {
             NascraftandroidTheme {
-                MainScreen(
-                    currentScreen = currentScreen,
-                    connectedServer = connectedServer,
-                    uploadStates = uploadStates,
-                    overallUploadState = overallUploadState,
-                    isUploadPaused = isUploadPaused,
-                    selectedUploadMediaType = selectedUploadMediaType,
-                    discoveryManager = discoveryManager,
-                    albumUploadManager = albumUploadManager,
-                    fileUploadManager = fileUploadManager,
-                    onConnectToServer = { server ->
-                        onConnectToServer(server)
-                    },
-                    onStartUpload = { server ->
-                        startAlbumUpload(server, selectedUploadMediaType)
-                    },
-                    onUploadMediaTypeChange = { mediaType ->
-                        selectedUploadMediaType = mediaType
-                    },
-                    onStopUpload = {
-                        albumUploadManager.stopAlbumUpload()
-                        uploadStates.clear()
-                        overallUploadState = null
-                        isUploadPaused = false
-                    },
-                    onTogglePause = {
-                        if (albumUploadManager.isPaused()) {
-                            albumUploadManager.resumeAlbumUpload()
+                val profile = authState.profile()
+                if (showAuthenticatedHome && authState.session != null && profile != null) {
+                    MainScreen(
+                        currentScreen = Screen.SERVER_DETAIL,
+                        connectedServer = profile.asConnectedServer(),
+                        uploadStates = uploadStates,
+                        overallUploadState = overallUploadState,
+                        isUploadPaused = isUploadPaused,
+                        selectedUploadMediaType = selectedUploadMediaType,
+                        discoveryManager = discoveryManager,
+                        albumUploadManager = albumUploadManager,
+                        fileUploadManager = fileUploadManager,
+                        nativeBusiness = nativeBusinessClient,
+                        downloadResumeManager = downloadResumeManager,
+                        onConnectToServer = {},
+                        onStartUpload = { server -> startAlbumUpload(server, selectedUploadMediaType) },
+                        onStopUpload = {
+                            albumUploadManager.stopAlbumUpload()
+                            uploadStates.clear()
+                            overallUploadState = null
                             isUploadPaused = false
-                        } else {
-                            albumUploadManager.pauseAlbumUpload()
-                            isUploadPaused = true
-                        }
-                    },
-                    onBackToDiscovery = {
-                        currentScreen = Screen.DISCOVERY
-                        connectedServer = null
-                        albumUploadManager.stopAlbumUpload()
-                    }
-                )
+                        },
+                        onTogglePause = {
+                            if (albumUploadManager.isPaused()) {
+                                albumUploadManager.resumeAlbumUpload()
+                                isUploadPaused = false
+                            } else {
+                                albumUploadManager.pauseAlbumUpload()
+                                isUploadPaused = true
+                            }
+                        },
+                        onUploadMediaTypeChange = { selectedUploadMediaType = it },
+                        onBackToDiscovery = {
+                            currentScreen = Screen.DISCOVERY
+                            connectedServer = null
+                            showAuthenticatedHome = false
+                            albumUploadManager.stopAlbumUpload()
+                        },
+                    )
+                } else {
+                    NativeAuthScreen(
+                        repository = deviceAuthRepository,
+                        coordinator = nativeAuthCoordinator,
+                        nativeBusiness = nativeBusinessClient,
+                        albumUploadManager = albumUploadManager,
+                        discoveryManager = discoveryManager,
+                        initialState = authState,
+                        initialNotice = authStateRecoveryNotice,
+                        returnSignal = appLinkReturnSignal,
+                        onStateChanged = { authState = it },
+                        onOpenHome = {
+                            val currentProfile = runCatching { deviceAuthRepository.snapshot().profile() }.getOrNull()
+                            if (currentProfile != null && deviceAuthRepository.snapshot().session != null) {
+                                connectedServer = currentProfile.asConnectedServer()
+                                currentScreen = Screen.SERVER_DETAIL
+                                showAuthenticatedHome = true
+                                discoveryManager.stopDiscovery()
+                                discoveryManager.stopMDNSDiscovery()
+                            }
+                        },
+                    )
+                }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (isVerifiedAppReturn(intent)) appLinkReturnSignal += 1
+    }
+
+    private fun isVerifiedAppReturn(intent: Intent?): Boolean {
+        val uri: Uri = intent?.data ?: return false
+        val pending = runCatching { deviceAuthRepository.snapshot().pendingFlow }.getOrNull() ?: return false
+        return intent.action == Intent.ACTION_VIEW &&
+            uri.scheme == "https" && uri.host == BuildConfig.APP_LINKS_HOST &&
+            uri.userInfo == null && uri.fragment == null && uri.port in setOf(-1, 443) &&
+            uri.encodedPath == "/app/return" && pending.kind == PendingNativeFlow.Kind.PAIRING &&
+            pending.requestId != null
+        // Query parameters are intentionally ignored; the return only triggers a signed claim check.
     }
     
     override fun onDestroy() {
@@ -215,8 +321,8 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val baseUrl = "${server.proto}://${server.ip.hostAddress}:${server.port}"
-        Log.i("MainActivity", "Starting album upload to: $baseUrl, mediaType=$mediaType")
+        val baseUrl = server.apiBaseUrl()
+        Log.i("MainActivity", "Starting authenticated album upload, mediaType=$mediaType")
 
         // 清空上一次的进度条（每个进行中的文件会各自出现一条）
         uploadStates.clear()
@@ -277,6 +383,8 @@ fun MainScreen(
     discoveryManager: DiscoveryManager,
     albumUploadManager: AlbumUploadManager,
     fileUploadManager: FileUploadManager,
+    nativeBusiness: NativeBusinessClient? = null,
+    downloadResumeManager: DownloadResumeManager? = null,
     onConnectToServer: (DiscoveredServer) -> Unit,
     onStartUpload: (DiscoveredServer) -> Unit,
     onStopUpload: () -> Unit,
@@ -298,6 +406,8 @@ fun MainScreen(
                     server = server,
                     albumUploadManager = albumUploadManager,
                     fileUploadManager = fileUploadManager,
+                    nativeBusiness = nativeBusiness,
+                    downloadResumeManager = downloadResumeManager,
                     uploadStates = uploadStates,
                     isUploadPaused = isUploadPaused,
                     selectedUploadMediaType = selectedUploadMediaType,
@@ -568,7 +678,7 @@ fun ServerCard(
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "IP地址: ${server.ip.hostAddress}",
+                text = "服务器域名: ${server.displayEndpoint()}",
                 style = MaterialTheme.typography.bodyMedium
             )
             Text(

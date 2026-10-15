@@ -1,11 +1,7 @@
 package com.hawky.nascraft
 
 import android.util.Log
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 /**
  * 已上传文件信息
@@ -40,21 +36,18 @@ data class UploadedFilesResponse(
  * 文件上传管理器
  * 负责获取已上传文件列表、上传文件等操作
  */
-class FileUploadManager(private val context: android.content.Context) {
+class FileUploadManager(
+    private val context: android.content.Context,
+    private val nativeBusiness: NativeBusinessClient? = null,
+) {
     companion object {
         private const val TAG = "FileUploadManager"
         private const val DEFAULT_PAGE_SIZE = 20
     }
 
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .build()
-
     /**
      * 获取已上传文件列表
-     * @param baseUrl 服务器基础URL (例如 "http://192.168.1.100:8080")
+     * @param baseUrl 当前配置的固定 HTTPS API Origin（业务请求本身由 NativeBusinessClient 签名发送）
      * @param page 页码，从1开始
      * @param pageSize 每页数量，默认20
      * @param status 文件状态过滤，0=上传中, 1=处理中, 2=已完成，null表示不过滤
@@ -78,50 +71,29 @@ class FileUploadManager(private val context: android.content.Context) {
     ): UploadedFilesResponse? {
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val url = StringBuilder("$baseUrl/api/uploaded_files?page=$page&page_size=$pageSize")
+                val path = StringBuilder("/api/uploaded_files?page=$page&page_size=$pageSize")
                 status?.let {
-                    url.append("&status=$it")
+                    path.append("&status=$it")
                 }
                 sortBy?.let {
-                    url.append("&sort_by=$it")
+                    path.append("&sort_by=").append(queryEncode(it))
                 }
                 order?.let {
-                    url.append("&order=$it")
+                    path.append("&order=").append(queryEncode(it))
                 }
                 sourceDevice?.let {
-                    url.append("&source_device=").append(java.net.URLEncoder.encode(it, "UTF-8"))
+                    path.append("&source_device=").append(queryEncode(it))
                 }
                 mediaType?.let {
-                    url.append("&media_type=").append(java.net.URLEncoder.encode(it, "UTF-8"))
+                    path.append("&media_type=").append(queryEncode(it))
                 }
                 filename?.takeIf { it.isNotBlank() }?.let {
-                    url.append("&filename=").append(java.net.URLEncoder.encode(it.trim(), "UTF-8"))
+                    path.append("&filename=").append(queryEncode(it.trim()))
                 }
-
-                Log.d(TAG, "Fetching uploaded files: url=$url")
-
-                val request = Request.Builder()
-                    .url(url.toString())
-                    .get()
-                    .build()
-
-                okHttpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        val body = response.body?.string()
-                        Log.e(TAG, "Failed to fetch uploaded files: HTTP ${response.code}, body=${body?.take(500)}")
-                        return@withContext null
-                    }
-
-                    val responseBody = response.body?.string()
-                    if (responseBody == null) {
-                        Log.e(TAG, "Empty response body")
-                        return@withContext null
-                    }
-
-                    parseUploadedFilesResponse(responseBody)
-                }
+                val response = nativeBusiness?.jsonSelected("GET", path.toString()) ?: return@withContext null
+                parseUploadedFilesResponse(response.body.toString(Charsets.UTF_8))
             } catch (e: Exception) {
-                Log.e(TAG, "Error fetching uploaded files", e)
+                Log.w(TAG, "Secure file-list request did not complete")
                 return@withContext null
             }
         }
@@ -133,22 +105,8 @@ class FileUploadManager(private val context: android.content.Context) {
     suspend fun getSources(baseUrl: String): List<String>? {
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val url = "$baseUrl/api/uploaded_files/sources"
-                val request = Request.Builder()
-                    .url(url)
-                    .get()
-                    .build()
-
-                okHttpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        Log.e(TAG, "Failed to fetch sources: HTTP ${response.code}")
-                        return@withContext null
-                    }
-                    val body = response.body?.string()
-                    if (body == null) {
-                        Log.e(TAG, "Empty response body for sources")
-                        return@withContext null
-                    }
+                val response = nativeBusiness?.jsonSelected("GET", "/api/uploaded_files/sources") ?: return@withContext null
+                val body = response.body.toString(Charsets.UTF_8)
                     val root = JSONObject(body)
                     if (root.optInt("status", -1) != 1 || root.optString("code", "-1") != "0") {
                         return@withContext null
@@ -160,9 +118,8 @@ class FileUploadManager(private val context: android.content.Context) {
                         list.add(arr.getString(i))
                     }
                     list
-                }
             } catch (e: Exception) {
-                Log.e(TAG, "Error fetching sources", e)
+                Log.w(TAG, "Secure source-list request did not complete")
                 null
             }
         }
@@ -178,13 +135,13 @@ class FileUploadManager(private val context: android.content.Context) {
             val code = root.optString("code", "-1")
 
             if (responseStatus != 1 || code != "0") {
-                Log.e(TAG, "Server returned error: status=$responseStatus, code=$code, raw=${responseBody.take(500)}")
+                Log.w(TAG, "File-list API returned a non-success response")
                 return null
             }
 
             val data = root.optJSONObject("data")
             if (data == null) {
-                Log.e(TAG, "Missing 'data' field in response")
+                Log.w(TAG, "File-list API returned an incomplete response")
                 return null
             }
 
@@ -259,4 +216,6 @@ class FileUploadManager(private val context: android.content.Context) {
         val format = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
         return format.format(date)
     }
+
+    private fun queryEncode(value: String): String = java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 }

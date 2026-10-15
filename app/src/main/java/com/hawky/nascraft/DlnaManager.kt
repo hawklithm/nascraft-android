@@ -1,27 +1,16 @@
 package com.hawky.nascraft
 
 import android.util.Log
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 /**
  * DLNA 管理器
  * 封装所有 DLNA 相关的 API 调用
  */
-class DlnaManager {
+class DlnaManager(private val nativeBusiness: NativeBusinessClient? = null) {
     companion object {
         private const val TAG = "DlnaManager"
     }
-
-    private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .build()
 
     /**
      * 获取已发现的 DLNA 设备列表
@@ -29,31 +18,10 @@ class DlnaManager {
     suspend fun listRenderers(baseUrl: String): List<Pair<DlnaRenderer, PlaybackInfo>>? {
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val url = "$baseUrl/api/dlna/renderers"
-                Log.d(TAG, "Fetching DLNA renderers: $url")
-
-                val request = Request.Builder()
-                    .url(url)
-                    .get()
-                    .build()
-
-                okHttpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        val body = response.body?.string()
-                        Log.e(TAG, "Failed to fetch renderers: HTTP ${response.code}, body=${body?.take(500)}")
-                        return@use null
-                    }
-
-                    val responseBody = response.body?.string()
-                    if (responseBody == null) {
-                        Log.e(TAG, "Empty response body")
-                        return@use null
-                    }
-
-                    parseDeviceListResponse(responseBody)
-                }
+                val response = nativeBusiness?.jsonSelected("GET", "/api/dlna/renderers") ?: return@withContext null
+                parseDeviceListResponse(response.body.toString(Charsets.UTF_8))
             } catch (e: Exception) {
-                Log.e(TAG, "Error fetching DLNA renderers", e)
+                Log.w(TAG, "Secure DLNA request did not complete")
                 null
             }
         }
@@ -69,7 +37,7 @@ class DlnaManager {
             val code = root.optString("code", "-1")
 
             if (responseStatus != 1 || code != "0") {
-                Log.e(TAG, "Server returned error: status=$responseStatus, code=$code")
+                Log.w(TAG, "DLNA API returned a non-success response")
                 return null
             }
 
@@ -203,30 +171,11 @@ class DlnaManager {
     private suspend fun sendControlRequest(baseUrl: String, path: String, body: JSONObject): Boolean {
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val url = "$baseUrl$path"
-                Log.d(TAG, "Sending control request: $url, body=$body")
-
-                val requestBody = body.toString().toRequestBody(
-                    "application/json; charset=utf-8".toMediaType()
-                )
-
-                val request = Request.Builder()
-                    .url(url)
-                    .post(requestBody)
-                    .build()
-
-                okHttpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        val bodyText = response.body?.string()
-                        Log.e(TAG, "Control request failed: HTTP ${response.code}, body=$bodyText")
-                        return@use false
-                    }
-
-                    Log.d(TAG, "Control request succeeded")
-                    return@use true
-                }
+                val response = nativeBusiness?.jsonSelected("POST", path, body.toString()) ?: return@withContext false
+                val envelope = JSONObject(response.body.toString(Charsets.UTF_8))
+                envelope.optInt("status") == 1 && envelope.optString("code") == "0"
             } catch (e: Exception) {
-                Log.e(TAG, "Error sending control request", e)
+                Log.w(TAG, "Secure DLNA control request did not complete")
                 return@withContext false
             }
         }

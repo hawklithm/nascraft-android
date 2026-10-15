@@ -1,0 +1,84 @@
+{
+  "contract_version": "rfc9421-es256-nascraft-v1",
+  "description": "Test-only real ES256 signatures over frozen NASCraft request vectors. The private signing key is intentionally omitted.",
+  "algorithm": "ecdsa-p256-sha256",
+  "public_key_spki_der_b64url": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAzM6xVB28-23pUCOHNlBN6FEntzqrEq8x2r-1ox3tgZyDY0o94iSP9VC13VUNYuPQ4t0bjxgmGzS5IKANfAg_g",
+  "public_key_thumbprint_b64url": "VPd4m8e4NapWoVMi9rdBsH-bAiOJ8jyTGwefXCDFJYM",
+  "requests": [
+    {
+      "id": "standard",
+      "realm": "lan_native",
+      "route": "standard",
+      "method": "POST",
+      "raw_path_and_query": "/api/lan/native/v1/auth/nonces?purpose=pair",
+      "session_marker": "preauth:pair",
+      "extras": {},
+      "api_origin": "https://nas.example.test",
+      "expected_key_id": "VPd4m8e4NapWoVMi9rdBsH-bAiOJ8jyTGwefXCDFJYM",
+      "now_unix_seconds": 1700000030,
+      "body_base64": "eyJmaXh0dXJlIjoiUkZDIDk0MjEgY3Jvc3MtbGFuZ3VhZ2UgdmVjdG9yIn0=",
+      "headers": {
+        "content-digest": "sha-256=:+OzgpR9QkNNvrfVz5qzFiPVj4k7vECuegqeP8gk4ODc=:",
+        "nascraft-session": "preauth:pair",
+        "nascraft-nonce": "CMKQQfCSvltsQulnwvfMtUjujhwlOMcg",
+        "signature-input": "sig1=(\"@method\" \"@target-uri\" \"content-digest\" \"nascraft-session\" \"nascraft-nonce\");created=1700000000;expires=1700000060;nonce=\"CMKQQfCSvltsQulnwvfMtUjujhwlOMcg\";keyid=\"VPd4m8e4NapWoVMi9rdBsH-bAiOJ8jyTGwefXCDFJYM\";alg=\"ecdsa-p256-sha256\"",
+        "signature": "sig1=:NnaME7oHcO5+dWZTw8TW6qqo+5/NECWqCQ/HQKsMnwdWpj1aSRhtST8Eh+I8wZkp8yiyuOC/5rFnGvQ3twopew==:"
+      },
+      "signature_base": "\"@method\": POST\n\"@target-uri\": https://nas.example.test/api/lan/native/v1/auth/nonces?purpose=pair\n\"content-digest\": sha-256=:+OzgpR9QkNNvrfVz5qzFiPVj4k7vECuegqeP8gk4ODc=:\n\"nascraft-session\": preauth:pair\n\"nascraft-nonce\": CMKQQfCSvltsQulnwvfMtUjujhwlOMcg\n\"@signature-params\": (\"@method\" \"@target-uri\" \"content-digest\" \"nascraft-session\" \"nascraft-nonce\");created=1700000000;expires=1700000060;nonce=\"CMKQQfCSvltsQulnwvfMtUjujhwlOMcg\";keyid=\"VPd4m8e4NapWoVMi9rdBsH-bAiOJ8jyTGwefXCDFJYM\";alg=\"ecdsa-p256-sha256\""
+    },
+    {
+      "id": "upload",
+      "realm": "lan_native",
+      "route": "upload",
+      "method": "POST",
+      "raw_path_and_query": "/api/upload",
+      "session_marker": "session-fixture-01",
+      "extras": {
+        "x-file-id": "fixture-file-0123",
+        "x-start-offset": "0",
+        "content-range": "bytes 0-9/10"
+      },
+      "api_origin": "https://nas.example.test",
+      "expected_key_id": "VPd4m8e4NapWoVMi9rdBsH-bAiOJ8jyTGwefXCDFJYM",
+      "now_unix_seconds": 1700000030,
+      "body_base64": "Y2h1bmstZGF0YQ==",
+      "headers": {
+        "content-digest": "sha-256=:IVm8kOqvp3W3zV/RjI37H5GvDAPq5EZr/pqIrODoM/w=:",
+        "nascraft-session": "session-fixture-01",
+        "nascraft-nonce": "t2q4Shxq98YIIQMveIbQdJcOJrXKypnJ",
+        "signature-input": "sig1=(\"@method\" \"@target-uri\" \"content-digest\" \"nascraft-session\" \"nascraft-nonce\" \"x-file-id\" \"x-start-offset\" \"content-range\");created=1700000000;expires=1700000060;nonce=\"t2q4Shxq98YIIQMveIbQdJcOJrXKypnJ\";keyid=\"VPd4m8e4NapWoVMi9rdBsH-bAiOJ8jyTGwefXCDFJYM\";alg=\"ecdsa-p256-sha256\"",
+        "signature": "sig1=:xZP+YHnxME/2WxKt63/D7yuv4ZJlhUkR9OHsNOg4MXN7+MH3JkZUyxpXnvV8U6vt+SkZtNal/KJqDzN56+aFjA==:",
+        "x-file-id": "fixture-file-0123",
+        "x-start-offset": "0",
+        "content-range": "bytes 0-9/10"
+      },
+      "signature_base": "\"@method\": POST\n\"@target-uri\": https://nas.example.test/api/upload\n\"content-digest\": sha-256=:IVm8kOqvp3W3zV/RjI37H5GvDAPq5EZr/pqIrODoM/w=:\n\"nascraft-session\": session-fixture-01\n\"nascraft-nonce\": t2q4Shxq98YIIQMveIbQdJcOJrXKypnJ\n\"x-file-id\": fixture-file-0123\n\"x-start-offset\": 0\n\"content-range\": bytes 0-9/10\n\"@signature-params\": (\"@method\" \"@target-uri\" \"content-digest\" \"nascraft-session\" \"nascraft-nonce\" \"x-file-id\" \"x-start-offset\" \"content-range\");created=1700000000;expires=1700000060;nonce=\"t2q4Shxq98YIIQMveIbQdJcOJrXKypnJ\";keyid=\"VPd4m8e4NapWoVMi9rdBsH-bAiOJ8jyTGwefXCDFJYM\";alg=\"ecdsa-p256-sha256\""
+    },
+    {
+      "id": "download-range",
+      "realm": "lan_native",
+      "route": "download",
+      "method": "GET",
+      "raw_path_and_query": "/api/download/fixture-file-0123?inline=1",
+      "session_marker": "session-fixture-01",
+      "extras": {
+        "range": "bytes=0-4",
+        "if-range": "\"fixture-etag\""
+      },
+      "api_origin": "https://nas.example.test",
+      "expected_key_id": "VPd4m8e4NapWoVMi9rdBsH-bAiOJ8jyTGwefXCDFJYM",
+      "now_unix_seconds": 1700000030,
+      "body_base64": "",
+      "headers": {
+        "content-digest": "sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:",
+        "nascraft-session": "session-fixture-01",
+        "nascraft-nonce": "jzIaFdkPCIz6f7EkLpFj8cuI0hJmZGbp",
+        "signature-input": "sig1=(\"@method\" \"@target-uri\" \"content-digest\" \"nascraft-session\" \"nascraft-nonce\" \"range\" \"if-range\");created=1700000000;expires=1700000060;nonce=\"jzIaFdkPCIz6f7EkLpFj8cuI0hJmZGbp\";keyid=\"VPd4m8e4NapWoVMi9rdBsH-bAiOJ8jyTGwefXCDFJYM\";alg=\"ecdsa-p256-sha256\"",
+        "signature": "sig1=:RgJn7xIWKcCSACTGhgkc4mzLA09eLgWvYuCItksxh8Aw67lRbyNUUwMClxJ4NVzxE3tC+oQu53TeK7ig3hk7XA==:",
+        "range": "bytes=0-4",
+        "if-range": "\"fixture-etag\""
+      },
+      "signature_base": "\"@method\": GET\n\"@target-uri\": https://nas.example.test/api/download/fixture-file-0123?inline=1\n\"content-digest\": sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:\n\"nascraft-session\": session-fixture-01\n\"nascraft-nonce\": jzIaFdkPCIz6f7EkLpFj8cuI0hJmZGbp\n\"range\": bytes=0-4\n\"if-range\": \"fixture-etag\"\n\"@signature-params\": (\"@method\" \"@target-uri\" \"content-digest\" \"nascraft-session\" \"nascraft-nonce\" \"range\" \"if-range\");created=1700000000;expires=1700000060;nonce=\"jzIaFdkPCIz6f7EkLpFj8cuI0hJmZGbp\";keyid=\"VPd4m8e4NapWoVMi9rdBsH-bAiOJ8jyTGwefXCDFJYM\";alg=\"ecdsa-p256-sha256\""
+    }
+  ]
+}

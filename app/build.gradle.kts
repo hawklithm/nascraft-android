@@ -14,6 +14,18 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+        // The production host must be supplied when this app is signed for release.
+        // The placeholder does not claim a verified production App Link association.
+        val appLinksHost = providers.gradleProperty("nascraftAppLinksHost")
+            .orElse("nascraft.invalid")
+            .get()
+            .trim()
+            .lowercase()
+        require(appLinksHost.matches(Regex("(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"))) {
+            "nascraftAppLinksHost must be a complete DNS hostname"
+        }
+        manifestPlaceholders["appLinksHost"] = appLinksHost
+        buildConfigField("String", "APP_LINKS_HOST", "\"$appLinksHost\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -42,6 +54,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -77,6 +90,10 @@ dependencies {
 
     // Network - 通过版本目录引用
     implementation(libs.okhttp)
+    // Native Android passkeys: use the OS Credential Manager and its Play services provider adapter.
+    implementation(libs.androidx.credentials)
+    implementation(libs.androidx.credentials.play.services.auth)
+    implementation(libs.google.code.scanner)
 
     // Image loading with Coil for Jetpack Compose - v2.x for better mirror compatibility
     implementation("io.coil-kt:coil-compose:2.4.0")
@@ -86,6 +103,9 @@ dependencies {
 
     // Testing
     testImplementation(libs.junit)
+    testImplementation(libs.org.json)
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
